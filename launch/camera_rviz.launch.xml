@@ -1,0 +1,8 @@
+<launch>
+    <node pkg="rviz2" exec="rviz2" />
+
+    <include file="$(find-pkg-share realsense2_camera)/launch/rs_launch.py">
+        <arg name="depth_module.profile" value="1280x720x30"/>
+        <arg name="pointcloud.enable" value="true"/>
+    </include>
+</launch>
