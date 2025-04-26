@@ -9,10 +9,12 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp)
 find_package(std_msgs)
+find_package(sensor_msgs)
+find_package(cv_bridge)
 find_package(OpenCV)
 
 add_executable(frontend src/processor_node.cpp)
-ament_target_dependencies(frontend rclcpp std_msgs OpenCV)
+ament_target_dependencies(frontend rclcpp sensor_msgs OpenCV cv_bridge)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -32,9 +34,15 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/
 )
 
+# Install config files.
+install(DIRECTORY
+  config
+  DESTINATION share/${PROJECT_NAME}/
+)
+
 # Install nodes
 install(
-  TARGETS [frontend]
+  TARGETS frontend
   DESTINATION lib/${PROJECT_NAME}
 )
 
