@@ -24,7 +24,7 @@ private:
     // Callback function for processing incoming images
     void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
-        RCLCPP_INFO(this->get_logger(), "Received image, size: %dx%d", 
+        RCLCPP_DEBUG(this->get_logger(), "Received image, size: %dx%d", 
                     msg->width, msg->height);
         
         try {
@@ -34,7 +34,7 @@ private:
             
             // Process the image (placeholder for your SLAM algorithm)
             // For now, just display basic image info
-            RCLCPP_INFO(this->get_logger(), "Processing image with dimensions: %dx%d",
+            RCLCPP_DEBUG(this->get_logger(), "Processing image with dimensions: %dx%d",
                        image.cols, image.rows);
             
             // You'll add your SLAM processing code here
