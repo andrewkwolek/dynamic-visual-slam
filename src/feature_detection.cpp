@@ -3,16 +3,16 @@
 #include <opencv2/opencv.hpp>
 #include <cv_bridge/cv_bridge.hpp>
 
-class Processor : public rclcpp::Node
+class FeatureDetector : public rclcpp::Node
 {
 public:
-    Processor() : Node("processor")
+    FeatureDetector() : Node("feature_detector")
     {
         // Create a subscriber for the camera image topic
         image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/camera/camera/color/image_raw",
             10,
-            std::bind(&Processor::imageCallback, this, std::placeholders::_1));
+            std::bind(&FeatureDetector::imageCallback, this, std::placeholders::_1));
             
         RCLCPP_INFO(this->get_logger(), "Image processor node initialized");
     }
@@ -47,7 +47,7 @@ private:
 
 int main(int argc, char* argv[]) {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<Processor>());
+    rclcpp::spin(std::make_shared<FeatureDetector>());
     rclcpp::shutdown();
     return 0;
 }

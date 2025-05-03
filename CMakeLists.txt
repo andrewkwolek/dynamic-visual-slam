@@ -13,7 +13,7 @@ find_package(sensor_msgs)
 find_package(cv_bridge)
 find_package(OpenCV)
 
-add_executable(frontend src/processor_node.cpp)
+add_executable(frontend src/feature_detection.cpp)
 ament_target_dependencies(frontend rclcpp sensor_msgs OpenCV cv_bridge)
 
 if(BUILD_TESTING)
