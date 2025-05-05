@@ -48,6 +48,8 @@ public:
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
         static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
 
+        flann_ = cv::FlannBasedMatcher(cv::makePtr<cv::flann::KDTreeIndexParams>(5), cv::makePtr<cv::flann::SearchParams>(50));
+
         geometry_msgs::msg::TransformStamped odom;
         odom.header.stamp = this->now();
         odom.header.frame_id = "world";
@@ -88,9 +90,14 @@ private:
     // ORB Feature detector
     cv::Ptr<cv::ORB> orb_detector_;
 
+    // FLANN feature matcher
+    cv::FlannBasedMatcher flann_;
+
     // Previous frame info
     cv::Mat prev_frame_;
+    std::vector<cv::KeyPoint> prev_kps_;
     std::vector<cv::Point2f> prev_points_;
+    cv::Mat prev_descriptors_;
     bool prev_frame_valid_;
 
     // TF broadcasters
@@ -197,45 +204,41 @@ private:
             if (prev_frame_valid_) {
                 cv::Mat vis_image = current_frame.clone();
                 
-                if (!prev_points_.empty()) {
-                    std::vector<cv::Point2f> current_points;
-                    std::vector<uchar> status;
-                    std::vector<float> err;
-                    
-                    cv::calcOpticalFlowPyrLK(
-                        prev_frame_, current_frame_gray, 
-                        prev_points_, current_points,
-                        status, err);
+                std::vector<cv::KeyPoint> current_keypoints;
+                cv::Mat current_descriptors;
+                orb_detector_->detectAndCompute(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors);
 
-                    if (!camera_matrix_.empty()) {
-                        estimateCameraPose(prev_points_, current_points, status, msg->header.stamp);
-                    }
+                std::vector<std::vector<cv::DMatch>> matches;
+                flann_.knnMatch(current_descriptors, prev_descriptors_, matches, 2);
+
+                std::vector<char> matchesMask(matches.size(), 0);
+
+                for (size_t i = 0; i < matches.size(); i++) {
+                    if (matches[i].size() < 2) continue;
                     
-                    for (size_t i = 0; i < current_points.size(); i++) {
-                        if (status[i]) {
-                            cv::line(vis_image, prev_points_[i], current_points[i], 
-                                   cv::Scalar(0, 255, 0), 2);
-                            cv::circle(vis_image, current_points[i], 3, 
-                                     cv::Scalar(0, 0, 255), -1);
-                        }
+                    if (matches[i][0].distance < 0.7 * matches[i][1].distance) {
+                        matchesMask[i] = 1;
                     }
                 }
-                
-                std::vector<cv::KeyPoint> keypoints;
-                cv::Mat descriptors;
-                orb_detector_->detectAndCompute(current_frame_gray, cv::noArray(), 
-                                              keypoints, descriptors);
-                
+
+                std::vector<cv::DMatch> good_matches;
+                for (size_t i = 0; i < matches.size(); i++) {
+                    if (matchesMask[i]) {
+                        good_matches.push_back(matches[i][0]);
+                    }
+                }
+
+                cv::drawMatches(current_frame, current_keypoints, prev_frame_, prev_kps_, good_matches, vis_image, cv::Scalar(0, 255, 0), cv::Scalar(255, 0, 0), std::vector<char>(), cv::DrawMatchesFlags::DEFAULT);
+
                 prev_points_.clear();
-                for (const auto& kp : keypoints) {
+                for (const auto& kp : current_keypoints) {
                     prev_points_.push_back(kp.pt);
                 }
+
+                prev_descriptors_ = current_descriptors;
+                prev_kps_ = current_keypoints;
                 
-                cv::drawKeypoints(vis_image, keypoints, vis_image, 
-                                cv::Scalar(255, 0, 0), cv::DrawMatchesFlags::DEFAULT);
-                
-                sensor_msgs::msg::Image::SharedPtr out_msg = 
-                    cv_bridge::CvImage(msg->header, "bgr8", vis_image).toImageMsg();
+                sensor_msgs::msg::Image::SharedPtr out_msg = cv_bridge::CvImage(msg->header, "bgr8", vis_image).toImageMsg();
                 image_pub_->publish(*out_msg);
 
                 geometry_msgs::msg::TransformStamped camera_transform;
@@ -262,23 +265,17 @@ private:
                 current_frame_gray.copyTo(prev_frame_);
             } 
             else {
-                std::vector<cv::KeyPoint> keypoints;
-                cv::Mat descriptors;
-                orb_detector_->detectAndCompute(current_frame_gray, cv::noArray(), 
-                                             keypoints, descriptors);
-                
+                std::vector<cv::KeyPoint> current_keypoints;
+                cv::Mat current_descriptors;
+                orb_detector_->detectAndCompute(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors);
+
                 prev_points_.clear();
-                for (const auto& kp : keypoints) {
+                for (const auto& kp : current_keypoints) {
                     prev_points_.push_back(kp.pt);
                 }
-                
-                cv::Mat vis_image = current_frame.clone();
-                cv::drawKeypoints(vis_image, keypoints, vis_image, 
-                                cv::Scalar(255, 0, 0), cv::DrawMatchesFlags::DEFAULT);
-                
-                sensor_msgs::msg::Image::SharedPtr out_msg = 
-                    cv_bridge::CvImage(msg->header, "bgr8", vis_image).toImageMsg();
-                image_pub_->publish(*out_msg);
+
+                prev_descriptors_ = current_descriptors;
+                prev_kps_ = current_keypoints;
 
                 // Publish camera info if available
                 if (latest_camera_info_) {
