@@ -61,6 +61,12 @@ public:
         odom.transform.rotation.w = 1.0;
 
         static_broadcaster_->sendTransform(odom);
+
+        R_ = cv::Mat::eye(3, 3, CV_64F);
+        t_ = cv::Mat::zeros(3, 1, CV_64F);
+
+        camera_matrix_ = cv::Mat();
+        dist_coeffs_ = cv::Mat();
             
         RCLCPP_INFO(this->get_logger(), "Image processor node initialized");
     }
@@ -74,19 +80,107 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
 
+    // Camera info
     sensor_msgs::msg::CameraInfo::SharedPtr latest_camera_info_;
+    cv::Mat camera_matrix_;
+    cv::Mat dist_coeffs_;
 
+    // ORB Feature detector
     cv::Ptr<cv::ORB> orb_detector_;
 
+    // Previous frame info
     cv::Mat prev_frame_;
     std::vector<cv::Point2f> prev_points_;
     bool prev_frame_valid_;
 
+    // TF broadcasters
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_broadcaster_;
 
+    // Camera transform
+    cv::Mat R_;
+    cv::Mat t_;
+
+    void broadcastTransform(const rclcpp::Time& stamp) {
+        // First convert rotation matrix to quaternion
+        Eigen::Matrix3d R_eigen;
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                R_eigen(i, j) = R_.at<double>(i, j);
+            }
+        }
+        
+        Eigen::Quaterniond q(R_eigen);
+        
+        // Create the transform message for odom -> camera
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        transform_stamped.header.stamp = stamp;
+        transform_stamped.header.frame_id = "odom";
+        transform_stamped.child_frame_id = "camera";
+        
+        // Set the translation
+        transform_stamped.transform.translation.x = t_.at<double>(0);
+        transform_stamped.transform.translation.y = t_.at<double>(1);
+        transform_stamped.transform.translation.z = t_.at<double>(2);
+        
+        // Set the rotation
+        transform_stamped.transform.rotation.x = q.x();
+        transform_stamped.transform.rotation.y = q.y();
+        transform_stamped.transform.rotation.z = q.z();
+        transform_stamped.transform.rotation.w = q.w();
+        
+        // Broadcast the transform
+        tf_broadcaster_->sendTransform(transform_stamped);
+    }
+
+    void estimateCameraPose(const std::vector<cv::Point2f>& prev_pts, const std::vector<cv::Point2f>& curr_pts, const std::vector<uchar>& status, const rclcpp::Time& stamp) {
+        // Only use points that were successfully tracked
+        std::vector<cv::Point2f> points1, points2;
+        for (size_t i = 0; i < status.size(); i++) {
+            if (status[i]) {
+                points1.push_back(prev_pts[i]);
+                points2.push_back(curr_pts[i]);
+            }
+        }
+
+        // Need at least 5 matching points
+        if (points1.size() < 5 || camera_matrix_.empty()) {
+            RCLCPP_WARN(this->get_logger(), "Not enough matching points or no camera info for pose estimation");
+            return;
+        }
+
+        // Find the essential matrix
+        cv::Mat E = cv::findEssentialMat(points1, points2, camera_matrix_, cv::RANSAC, 0.999, 1.0);
+
+        // Recover R and t from the essential matrix
+        cv::Mat R, t;
+        cv::recoverPose(E, points1, points2, camera_matrix_, R, t);
+
+        // Update the cumulative pose
+        t_ = t_ + R_ * t;
+        R_ = R * R_;
+
+        // Broadcast the transform
+        broadcastTransform(stamp);
+
+        // Print the current pose for debugging
+        RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
+    }
+
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         latest_camera_info_ = msg;
+
+        camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
+        camera_matrix_.at<double>(0, 0) = msg->k[0];
+        camera_matrix_.at<double>(0, 2) = msg->k[2];
+        camera_matrix_.at<double>(1, 1) = msg->k[4];
+        camera_matrix_.at<double>(1, 2) = msg->k[5];
+        camera_matrix_.at<double>(2, 2) = 1.0;
+
+        dist_coeffs_ = cv::Mat(1, 5, CV_64F);
+        for (int i = 0; i < 5; i++) {
+            dist_coeffs_.at<double>(0, i) = msg->d[i];
+        }
     }
     
     // Callback function for processing incoming images
@@ -112,6 +206,10 @@ private:
                         prev_frame_, current_frame_gray, 
                         prev_points_, current_points,
                         status, err);
+
+                    if (!camera_matrix_.empty()) {
+                        estimateCameraPose(prev_points_, current_points, status, msg->header.stamp);
+                    }
                     
                     for (size_t i = 0; i < current_points.size(); i++) {
                         if (status[i]) {
@@ -139,6 +237,20 @@ private:
                 sensor_msgs::msg::Image::SharedPtr out_msg = 
                     cv_bridge::CvImage(msg->header, "bgr8", vis_image).toImageMsg();
                 image_pub_->publish(*out_msg);
+
+                geometry_msgs::msg::TransformStamped camera_transform;
+                camera_transform.header.stamp = this->get_clock()->now();
+                camera_transform.header.frame_id = "odom";
+                camera_transform.child_frame_id = "camera_link";
+                camera_transform.transform.translation.x = 0.0;
+                camera_transform.transform.translation.y = 0.0;
+                camera_transform.transform.translation.z = 0.0;
+                camera_transform.transform.rotation.x = 0.0;
+                camera_transform.transform.rotation.y = 0.0;
+                camera_transform.transform.rotation.z = 0.0;
+                camera_transform.transform.rotation.w = 1.0;
+
+                tf_broadcaster_->sendTransform(camera_transform);
 
                 // Publish camera info if available
                 if (latest_camera_info_) {
