@@ -5,7 +5,14 @@
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/video/tracking.hpp>
+#include <opencv2/calib3d.hpp>
 #include <vector>
+#include "tf2_ros/static_transform_broadcaster.h"
+#include "tf2_ros/transform_broadcaster.h"
+#include "geometry_msgs/msg/transform_stamped.hpp"
+#include "tf2/LinearMath/Quaternion.hpp"
+#include "tf2_eigen/tf2_eigen.hpp"
+#include <Eigen/Geometry>
 
 class FeatureDetector : public rclcpp::Node
 {
@@ -37,6 +44,23 @@ public:
         orb_detector_ = cv::ORB::create();
 
         prev_frame_valid_ = false;
+
+        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+        static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
+
+        geometry_msgs::msg::TransformStamped odom;
+        odom.header.stamp = this->now();
+        odom.header.frame_id = "world";
+        odom.child_frame_id = "odom";
+        odom.transform.translation.x = 0.0;
+        odom.transform.translation.y = 0.0;
+        odom.transform.translation.z = 0.0;
+        odom.transform.rotation.x = 0.0;
+        odom.transform.rotation.y = 0.0;
+        odom.transform.rotation.z = 0.0;
+        odom.transform.rotation.w = 1.0;
+
+        static_broadcaster_->sendTransform(odom);
             
         RCLCPP_INFO(this->get_logger(), "Image processor node initialized");
     }
@@ -57,6 +81,9 @@ private:
     cv::Mat prev_frame_;
     std::vector<cv::Point2f> prev_points_;
     bool prev_frame_valid_;
+
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
+    std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_broadcaster_;
 
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         latest_camera_info_ = msg;
