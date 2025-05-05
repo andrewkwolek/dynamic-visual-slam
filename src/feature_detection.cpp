@@ -68,8 +68,10 @@ public:
         R_ = cv::Mat::eye(3, 3, CV_64F);
         t_ = cv::Mat::zeros(3, 1, CV_64F);
 
-        camera_matrix_ = cv::Mat();
-        dist_coeffs_ = cv::Mat();
+        rgb_camera_matrix_ = cv::Mat();
+        rgb_dist_coeffs_ = cv::Mat();
+        depth_camera_matrix_ = cv::Mat();
+        depth_dist_coeffs_ = cv::Mat();
             
         RCLCPP_INFO(this->get_logger(), "Image processor node initialized");
     }
@@ -90,8 +92,10 @@ private:
     // Camera info
     sensor_msgs::msg::CameraInfo::SharedPtr latest_rgb_camera_info_;
     sensor_msgs::msg::CameraInfo::SharedPtr latest_depth_camera_info_;
-    cv::Mat camera_matrix_;
-    cv::Mat dist_coeffs_;
+    cv::Mat rgb_camera_matrix_;
+    cv::Mat rgb_dist_coeffs_;
+    cv::Mat depth_camera_matrix_;
+    cv::Mat depth_dist_coeffs_;
 
     // ORB Feature detector
     cv::Ptr<cv::ORB> orb_detector_;
@@ -103,7 +107,8 @@ private:
     std::shared_ptr<message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image,sensor_msgs::msg::Image>>> sync_;
 
     // Previous frame info
-    cv::Mat prev_frame_;
+    cv::Mat prev_frame_gray_;
+    cv::Mat prev_frame_depth_;
     std::vector<cv::KeyPoint> prev_kps_;
     std::vector<cv::Point2f> prev_points_;
     cv::Mat prev_descriptors_;
@@ -149,29 +154,51 @@ private:
         tf_broadcaster_->sendTransform(transform_stamped);
     }
 
-    void estimateCameraPose(const std::vector<cv::Point2f>& prev_pts, const std::vector<cv::Point2f>& curr_pts, const std::vector<uchar>& status, const rclcpp::Time& stamp) {
+    void estimateCameraPose(const std::vector<cv::Point2f>& prev_pts, const std::vector<cv::Point2f>& curr_pts, const std::vector<uchar>& status, const cv::Mat& prev_depth, const cv::Mat& curr_depth, const rclcpp::Time& stamp) {
         // Only use points that were successfully tracked
-        std::vector<cv::Point2f> points1, points2;
+        std::vector<cv::Point3f> points1, points2;
+
+        float fx = rgb_camera_matrix_.at<double>(0, 0);
+        float fy = rgb_camera_matrix_.at<double>(1, 1);
+        float cx = rgb_camera_matrix_.at<double>(0, 2);
+        float cy = rgb_camera_matrix_.at<double>(1, 2);
+
         for (size_t i = 0; i < status.size(); i++) {
-            if (status[i]) {
-                points1.push_back(prev_pts[i]);
-                points2.push_back(curr_pts[i]);
-            }
+            if (!status[i]) continue;
+
+            int x_prev = std::round(prev_pts[i].x);
+            int y_prev = std::round(prev_pts[i].y);
+            int x_curr = std::round(curr_pts[i].x);
+            int y_curr = std::round(curr_pts[i].y);
+
+            float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
+            float d_curr = curr_depth.at<uint16_t>(y_curr, x_curr) * 0.001f;
+
+            cv::Point3f pt3d_prev((x_prev - cx) * d_prev / fx, (y_prev - cy) * d_prev / fy, d_prev);
+            cv::Point3f pt3d_curr((x_curr - cx) * d_curr / fx, (y_curr - cy) * d_curr / fy, d_curr);
+
+            points1.push_back(pt3d_prev);
+            points2.push_back(pt3d_curr);
         }
 
         // Need at least 5 matching points
-        if (points1.size() < 5 || camera_matrix_.empty()) {
+        if (points1.size() < 4) {
             RCLCPP_WARN(this->get_logger(), "Not enough matching points or no camera info for pose estimation");
             return;
         }
 
-        // Find the essential matrix
-        cv::Mat E = cv::findEssentialMat(points1, points2, camera_matrix_, cv::RANSAC, 0.999, 1.0);
-
         // Recover R and t from the essential matrix
-        cv::Mat R, t;
-        cv::recoverPose(E, points1, points2, camera_matrix_, R, t);
+        cv::Mat T, R, t, inliers;
+        if (!cv::estimateAffine3D(points1, points2, T, inliers, 0.03)) {
+            RCLCPP_WARN(this->get_logger(), "Failed to estimate rigid transformation");
+            return;
+        }
 
+        R = T(cv::Range(0, 2), cv::Range(0, 2));
+        t = T(cv::Range(0, 2), cv::Range(3, 3));
+
+        cv::SVD svd(R);
+        R = svd.u * svd.vt;
         // Update the cumulative pose
         t_ = t_ + R_ * t;
         R_ = R * R_;
@@ -186,21 +213,33 @@ private:
     void rgbInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         latest_rgb_camera_info_ = msg;
 
-        camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
-        camera_matrix_.at<double>(0, 0) = msg->k[0];
-        camera_matrix_.at<double>(0, 2) = msg->k[2];
-        camera_matrix_.at<double>(1, 1) = msg->k[4];
-        camera_matrix_.at<double>(1, 2) = msg->k[5];
-        camera_matrix_.at<double>(2, 2) = 1.0;
+        rgb_camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
+        rgb_camera_matrix_.at<double>(0, 0) = msg->k[0];
+        rgb_camera_matrix_.at<double>(0, 2) = msg->k[2];
+        rgb_camera_matrix_.at<double>(1, 1) = msg->k[4];
+        rgb_camera_matrix_.at<double>(1, 2) = msg->k[5];
+        rgb_camera_matrix_.at<double>(2, 2) = 1.0;
 
-        dist_coeffs_ = cv::Mat(1, 5, CV_64F);
+        rgb_dist_coeffs_ = cv::Mat(1, 5, CV_64F);
         for (int i = 0; i < 5; i++) {
-            dist_coeffs_.at<double>(0, i) = msg->d[i];
+            rgb_dist_coeffs_.at<double>(0, i) = msg->d[i];
         }
     }
 
     void depthInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         latest_depth_camera_info_ = msg;
+
+        depth_camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
+        depth_camera_matrix_.at<double>(0, 0) = msg->k[0];
+        depth_camera_matrix_.at<double>(0, 2) = msg->k[2];
+        depth_camera_matrix_.at<double>(1, 1) = msg->k[4];
+        depth_camera_matrix_.at<double>(1, 2) = msg->k[5];
+        depth_camera_matrix_.at<double>(2, 2) = 1.0;
+
+        depth_dist_coeffs_ = cv::Mat(1, 5, CV_64F);
+        for (int i = 0; i < 5; i++) {
+            depth_dist_coeffs_.at<double>(0, i) = msg->d[i];
+        }
     }
     
     // Callback function for processing incoming images
@@ -228,7 +267,8 @@ private:
 
                 if (current_keypoints.empty() || prev_kps_.empty() || current_descriptors.empty() || prev_descriptors_.empty()) {
                     RCLCPP_WARN(this->get_logger(), "No featured detected in one of the frames.");
-                    current_frame_gray.copyTo(prev_frame_);
+                    current_frame_gray.copyTo(prev_frame_gray_);
+                    current_frame_depth.copyTo(prev_frame_depth_);
                     prev_kps_ = current_keypoints;
                     prev_descriptors_ = current_descriptors;
                     return;
@@ -266,7 +306,7 @@ private:
                     std::vector<uchar> status(good_matches.size(), 1);
                     
                     // Estimate camera pose
-                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, rgb_msg->header.stamp);
+                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, prev_frame_depth_, current_frame_depth, rgb_msg->header.stamp);
                 }
 
                 prev_points_.clear();
@@ -287,7 +327,8 @@ private:
                     camera_info_pub_->publish(camera_info);
                 }
                 
-                current_frame_gray.copyTo(prev_frame_);
+                current_frame_gray.copyTo(prev_frame_gray_);
+                current_frame_depth.copyTo(prev_frame_depth_);
             } 
             else {
                 std::vector<cv::KeyPoint> current_keypoints;
@@ -309,7 +350,8 @@ private:
                     camera_info_pub_->publish(camera_info);
                 }
                 
-                current_frame_gray.copyTo(prev_frame_);
+                current_frame_gray.copyTo(prev_frame_gray_);
+                current_frame_depth.copyTo(prev_frame_depth_);
                 prev_frame_valid_ = true;
             }
             
