@@ -48,7 +48,7 @@ public:
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
         static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
 
-        flann_ = cv::FlannBasedMatcher(cv::makePtr<cv::flann::KDTreeIndexParams>(5), cv::makePtr<cv::flann::SearchParams>(50));
+        matcher_ = cv::BFMatcher(cv::NORM_HAMMING);
 
         geometry_msgs::msg::TransformStamped odom;
         odom.header.stamp = this->now();
@@ -91,7 +91,7 @@ private:
     cv::Ptr<cv::ORB> orb_detector_;
 
     // FLANN feature matcher
-    cv::FlannBasedMatcher flann_;
+    cv::BFMatcher matcher_;
 
     // Previous frame info
     cv::Mat prev_frame_;
@@ -123,7 +123,7 @@ private:
         geometry_msgs::msg::TransformStamped transform_stamped;
         transform_stamped.header.stamp = stamp;
         transform_stamped.header.frame_id = "odom";
-        transform_stamped.child_frame_id = "camera";
+        transform_stamped.child_frame_id = "camera_link";
         
         // Set the translation
         transform_stamped.transform.translation.x = t_.at<double>(0);
@@ -208,27 +208,48 @@ private:
                 cv::Mat current_descriptors;
                 orb_detector_->detectAndCompute(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors);
 
+                if (current_keypoints.empty() || prev_kps_.empty() || current_descriptors.empty() || prev_descriptors_.empty()) {
+                    RCLCPP_WARN(this->get_logger(), "No featured detected in one of the frames.");
+                    current_frame_gray.copyTo(prev_frame_);
+                    prev_kps_ = current_keypoints;
+                    prev_descriptors_ = current_descriptors;
+                    return;
+                }
+
                 std::vector<std::vector<cv::DMatch>> matches;
-                flann_.knnMatch(current_descriptors, prev_descriptors_, matches, 2);
+                matcher_.knnMatch(current_descriptors, prev_descriptors_, matches, 2);
 
-                std::vector<char> matchesMask(matches.size(), 0);
-
+                std::vector<cv::DMatch> good_matches;
                 for (size_t i = 0; i < matches.size(); i++) {
                     if (matches[i].size() < 2) continue;
                     
                     if (matches[i][0].distance < 0.7 * matches[i][1].distance) {
-                        matchesMask[i] = 1;
-                    }
-                }
-
-                std::vector<cv::DMatch> good_matches;
-                for (size_t i = 0; i < matches.size(); i++) {
-                    if (matchesMask[i]) {
                         good_matches.push_back(matches[i][0]);
                     }
                 }
 
-                cv::drawMatches(current_frame, current_keypoints, prev_frame_, prev_kps_, good_matches, vis_image, cv::Scalar(0, 255, 0), cv::Scalar(255, 0, 0), std::vector<char>(), cv::DrawMatchesFlags::DEFAULT);
+                for (const auto& match : good_matches) {
+                    // Get the matched points
+                    cv::Point2f curr_pt = current_keypoints[match.queryIdx].pt;
+                    
+                    // Draw a green circle
+                    cv::circle(vis_image, curr_pt, 5, cv::Scalar(0, 255, 0), 2);
+                }
+
+                if (good_matches.size() >= 5) {
+                    // Convert keypoints to points for pose estimation
+                    std::vector<cv::Point2f> prev_matched_pts, curr_matched_pts;
+                    for (const auto& match : good_matches) {
+                        prev_matched_pts.push_back(prev_kps_[match.trainIdx].pt);
+                        curr_matched_pts.push_back(current_keypoints[match.queryIdx].pt);
+                    }
+                    
+                    // Create status vector (all 1s since these are good matches)
+                    std::vector<uchar> status(good_matches.size(), 1);
+                    
+                    // Estimate camera pose
+                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, msg->header.stamp);
+                }
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
@@ -240,20 +261,6 @@ private:
                 
                 sensor_msgs::msg::Image::SharedPtr out_msg = cv_bridge::CvImage(msg->header, "bgr8", vis_image).toImageMsg();
                 image_pub_->publish(*out_msg);
-
-                geometry_msgs::msg::TransformStamped camera_transform;
-                camera_transform.header.stamp = this->get_clock()->now();
-                camera_transform.header.frame_id = "odom";
-                camera_transform.child_frame_id = "camera_link";
-                camera_transform.transform.translation.x = 0.0;
-                camera_transform.transform.translation.y = 0.0;
-                camera_transform.transform.translation.z = 0.0;
-                camera_transform.transform.rotation.x = 0.0;
-                camera_transform.transform.rotation.y = 0.0;
-                camera_transform.transform.rotation.z = 0.0;
-                camera_transform.transform.rotation.w = 1.0;
-
-                tf_broadcaster_->sendTransform(camera_transform);
 
                 // Publish camera info if available
                 if (latest_camera_info_) {
