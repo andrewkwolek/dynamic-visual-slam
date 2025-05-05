@@ -22,20 +22,22 @@ class FeatureDetector : public rclcpp::Node
 public:
     FeatureDetector() : Node("feature_detector")
     {
-        // Create message filter subscribers
-        rgb_sub_.subscribe(this, "/camera/camera/color/image_raw");
-        depth_sub_.subscribe(this, "/camera/camera/aligned_depth_to_color/image_raw");
+        rclcpp::QoS qos = rclcpp::QoS(10);
 
-        sync_ = std::make_shared<Sync>(SyncPolicy(10), rgb_sub_, depth_sub_);
+        // Create message filter subscribers
+        rgb_sub_.subscribe(this, "/camera/camera/color/image_raw", qos.get_rmw_qos_profile());
+        depth_sub_.subscribe(this, "/camera/camera/aligned_depth_to_color/image_raw", qos.get_rmw_qos_profile());
+
+        sync_ = std::make_shared<message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image>>>(message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image>(10), rgb_sub_, depth_sub_);
         sync_->registerCallback(std::bind(&FeatureDetector::syncCallback, this, std::placeholders::_1, std::placeholders::_2));
 
         // Create subscriptions
-        rgb_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/color/camera_info", 10, std::bind(&FeatureDetector::rgbInfoCallback, this, std::placeholders::_1));
-        depth_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/aligned_depth_to_color/camera_info", 10, std::bind(&FeatureDetector::depthInfoCallback, this, std::placeholders::_1));
+        rgb_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/color/camera_info", qos, std::bind(&FeatureDetector::rgbInfoCallback, this, std::placeholders::_1));
+        depth_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/aligned_depth_to_color/camera_info", qos, std::bind(&FeatureDetector::depthInfoCallback, this, std::placeholders::_1));
 
         // Create publishers
-        image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/feature_detector/features_image", 10);
-        camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/feature_detector/camera_info", 10);
+        image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/feature_detector/features_image", qos);
+        camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/feature_detector/camera_info", qos);
         
         // Initialize ORB feature detector
         orb_detector_ = cv::ORB::create();
@@ -98,9 +100,7 @@ private:
     cv::BFMatcher matcher_;
 
     // Message filter synchronizer
-    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image> SyncPolicy;
-    typedef message_filters::Synchronizer<SyncPolicy> Sync;
-    std::shared_ptr<Sync> sync_;
+    std::shared_ptr<message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image,sensor_msgs::msg::Image>>> sync_;
 
     // Previous frame info
     cv::Mat prev_frame_;
@@ -204,7 +204,7 @@ private:
     }
     
     // Callback function for processing incoming images
-    void syncCallback(const sensor_msgs::msg::Image::SharedPtr rgb_msg, const sensor_msgs::msg::Image::SharedPtr depth_msg)
+    void syncCallback(const sensor_msgs::msg::Image::ConstSharedPtr& rgb_msg, const sensor_msgs::msg::Image::ConstSharedPtr& depth_msg)
     {
         try {
             // Convert ROS image message to OpenCV image
@@ -216,12 +216,15 @@ private:
 
             cv::cvtColor(current_frame_rgb, current_frame_gray, cv::COLOR_BGR2GRAY);
 
+            cv::Mat depth_mask;
+            depth_mask = (current_frame_depth > 0) & (current_frame_depth < 10000);
+
             if (prev_frame_valid_) {
                 cv::Mat vis_image = current_frame_rgb.clone();
                 
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                orb_detector_->detectAndCompute(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors);
+                orb_detector_->detectAndCompute(current_frame_gray, depth_mask, current_keypoints, current_descriptors);
 
                 if (current_keypoints.empty() || prev_kps_.empty() || current_descriptors.empty() || prev_descriptors_.empty()) {
                     RCLCPP_WARN(this->get_logger(), "No featured detected in one of the frames.");
@@ -289,7 +292,7 @@ private:
             else {
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                orb_detector_->detectAndCompute(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors);
+                orb_detector_->detectAndCompute(current_frame_gray, depth_mask, current_keypoints, current_descriptors);
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
