@@ -13,15 +13,23 @@
 #include "tf2/LinearMath/Quaternion.hpp"
 #include "tf2_eigen/tf2_eigen.hpp"
 #include <Eigen/Geometry>
+#include "message_filters/subscriber.h"
+#include "message_filters/synchronizer.h"
+#include "message_filters/sync_policies/approximate_time.h"
 
 class FeatureDetector : public rclcpp::Node
 {
 public:
     FeatureDetector() : Node("feature_detector")
     {
-        // Create subscribers
-        rgb_sub_ = this->create_subscription<sensor_msgs::msg::Image>("/camera/camera/color/image_raw", 10, std::bind(&FeatureDetector::rgbCallback, this, std::placeholders::_1));
-        depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>("camera/camera/aligned_depth_to_color/image_raw", 10, std::bind(&FeatureDetector::depthCallback, this, std::placeholders::_1));
+        // Create message filter subscribers
+        rgb_sub_.subscribe(this, "/camera/camera/color/image_raw");
+        depth_sub_.subscribe(this, "/camera/camera/aligned_depth_to_color/image_raw");
+
+        sync_ = std::make_shared<Sync>(SyncPolicy(10), rgb_sub_, depth_sub_);
+        sync_->registerCallback(std::bind(&FeatureDetector::syncCallback, this, std::placeholders::_1, std::placeholders::_2));
+
+        // Create subscriptions
         rgb_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/color/camera_info", 10, std::bind(&FeatureDetector::rgbInfoCallback, this, std::placeholders::_1));
         depth_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/aligned_depth_to_color/camera_info", 10, std::bind(&FeatureDetector::depthInfoCallback, this, std::placeholders::_1));
 
@@ -65,9 +73,11 @@ public:
     }
 
 private:
+    // Message filter subscriptions
+    message_filters::Subscriber<sensor_msgs::msg::Image> rgb_sub_;
+    message_filters::Subscriber<sensor_msgs::msg::Image> depth_sub_;
+
     // Subscribers
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rgb_sub_;
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr rgb_info_sub_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr depth_info_sub_;
 
@@ -86,6 +96,11 @@ private:
 
     // FLANN feature matcher
     cv::BFMatcher matcher_;
+
+    // Message filter synchronizer
+    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image> SyncPolicy;
+    typedef message_filters::Synchronizer<SyncPolicy> Sync;
+    std::shared_ptr<Sync> sync_;
 
     // Previous frame info
     cv::Mat prev_frame_;
@@ -189,18 +204,20 @@ private:
     }
     
     // Callback function for processing incoming images
-    void rgbCallback(const sensor_msgs::msg::Image::SharedPtr msg)
+    void syncCallback(const sensor_msgs::msg::Image::SharedPtr rgb_msg, const sensor_msgs::msg::Image::SharedPtr depth_msg)
     {
         try {
             // Convert ROS image message to OpenCV image
-            cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
-            cv::Mat current_frame = cv_ptr->image;
+            cv_bridge::CvImagePtr rgb_cv_ptr = cv_bridge::toCvCopy(rgb_msg, "bgr8");
+            cv_bridge::CvImagePtr depth_cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_16UC1);
+            cv::Mat current_frame_rgb = rgb_cv_ptr->image;
+            cv::Mat current_frame_depth = depth_cv_ptr->image;
             cv::Mat current_frame_gray;
 
-            cv::cvtColor(current_frame, current_frame_gray, cv::COLOR_BGR2GRAY);
+            cv::cvtColor(current_frame_rgb, current_frame_gray, cv::COLOR_BGR2GRAY);
 
             if (prev_frame_valid_) {
-                cv::Mat vis_image = current_frame.clone();
+                cv::Mat vis_image = current_frame_rgb.clone();
                 
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
@@ -246,7 +263,7 @@ private:
                     std::vector<uchar> status(good_matches.size(), 1);
                     
                     // Estimate camera pose
-                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, msg->header.stamp);
+                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, rgb_msg->header.stamp);
                 }
 
                 prev_points_.clear();
@@ -257,13 +274,13 @@ private:
                 prev_descriptors_ = current_descriptors;
                 prev_kps_ = current_keypoints;
                 
-                sensor_msgs::msg::Image::SharedPtr out_msg = cv_bridge::CvImage(msg->header, "bgr8", vis_image).toImageMsg();
+                sensor_msgs::msg::Image::SharedPtr out_msg = cv_bridge::CvImage(rgb_msg->header, "bgr8", vis_image).toImageMsg();
                 image_pub_->publish(*out_msg);
 
                 // Publish camera info if available
                 if (latest_rgb_camera_info_) {
                     auto camera_info = *latest_rgb_camera_info_;
-                    camera_info.header = msg->header;  // Use the same header as the image
+                    camera_info.header = rgb_msg->header;  // Use the same header as the image
                     camera_info_pub_->publish(camera_info);
                 }
                 
@@ -285,7 +302,7 @@ private:
                 // Publish camera info if available
                 if (latest_rgb_camera_info_) {
                     auto camera_info = *latest_rgb_camera_info_;
-                    camera_info.header = msg->header;  // Use the same header as the image
+                    camera_info.header = rgb_msg->header;  // Use the same header as the image
                     camera_info_pub_->publish(camera_info);
                 }
                 
@@ -296,10 +313,6 @@ private:
         } catch (cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         }
-    }
-
-    void depthCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
-
     }
 };
 
