@@ -40,7 +40,7 @@ public:
         camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/feature_detector/camera_info", qos);
         
         // Initialize ORB feature detector
-        orb_detector_ = cv::ORB::create();
+        orb_detector_ = cv::ORB::create(800);
 
         prev_frame_valid_ = false;
 
@@ -158,28 +158,39 @@ private:
         // Only use points that were successfully tracked
         std::vector<cv::Point3f> points1, points2;
 
+        if (rgb_camera_matrix_.empty()) {
+            RCLCPP_ERROR(this->get_logger(), "RGB camera matrix is empty!");
+            return;
+        }
+
         float fx = rgb_camera_matrix_.at<double>(0, 0);
         float fy = rgb_camera_matrix_.at<double>(1, 1);
         float cx = rgb_camera_matrix_.at<double>(0, 2);
         float cy = rgb_camera_matrix_.at<double>(1, 2);
 
-        for (size_t i = 0; i < status.size(); i++) {
-            if (!status[i]) continue;
+        try {
+            for (size_t i = 0; i < status.size(); i++) {
+                if (!status[i]) continue;
 
-            int x_prev = std::round(prev_pts[i].x);
-            int y_prev = std::round(prev_pts[i].y);
-            int x_curr = std::round(curr_pts[i].x);
-            int y_curr = std::round(curr_pts[i].y);
+                int x_prev = std::round(prev_pts[i].x);
+                int y_prev = std::round(prev_pts[i].y);
+                int x_curr = std::round(curr_pts[i].x);
+                int y_curr = std::round(curr_pts[i].y);
 
-            float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
-            float d_curr = curr_depth.at<uint16_t>(y_curr, x_curr) * 0.001f;
+                float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
+                float d_curr = curr_depth.at<uint16_t>(y_curr, x_curr) * 0.001f;
 
-            cv::Point3f pt3d_prev((x_prev - cx) * d_prev / fx, (y_prev - cy) * d_prev / fy, d_prev);
-            cv::Point3f pt3d_curr((x_curr - cx) * d_curr / fx, (y_curr - cy) * d_curr / fy, d_curr);
+                cv::Point3f pt3d_prev((x_prev - cx) * d_prev / fx, (y_prev - cy) * d_prev / fy, d_prev);
+                cv::Point3f pt3d_curr((x_curr - cx) * d_curr / fx, (y_curr - cy) * d_curr / fy, d_curr);
 
-            points1.push_back(pt3d_prev);
-            points2.push_back(pt3d_curr);
+                points1.push_back(pt3d_prev);
+                points2.push_back(pt3d_curr);
+            }
+        } catch (const cv::Exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "Exception during point processing: %s", e.what());
+            return;
         }
+
 
         // Need at least 5 matching points
         if (points1.size() < 4) {
@@ -187,27 +198,32 @@ private:
             return;
         }
 
-        // Recover R and t from the essential matrix
-        cv::Mat T, R, t, inliers;
-        if (!cv::estimateAffine3D(points1, points2, T, inliers, 0.03)) {
-            RCLCPP_WARN(this->get_logger(), "Failed to estimate rigid transformation");
+        try {
+            // Recover R and t from the essential matrix
+            cv::Mat T, R, t, inliers;
+            if (!cv::estimateAffine3D(points1, points2, T, inliers, 0.03)) {
+                RCLCPP_WARN(this->get_logger(), "Failed to estimate rigid transformation");
+                return;
+            }
+
+            R = T(cv::Range(0, 3), cv::Range(0, 3));
+            t = T(cv::Range(0, 3), cv::Range(3, 4));
+
+            cv::SVD svd(R);
+            R = svd.u * svd.vt;
+            // Update the cumulative pose
+            t_ = t_ + R_ * t;
+            R_ = R * R_;
+
+            // Broadcast the transform
+            broadcastTransform(stamp);
+
+            // Print the current pose for debugging
+            RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
+        } catch (const cv::Exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "Exception during transformation estimation: %s", e.what());
             return;
         }
-
-        R = T(cv::Range(0, 2), cv::Range(0, 2));
-        t = T(cv::Range(0, 2), cv::Range(3, 3));
-
-        cv::SVD svd(R);
-        R = svd.u * svd.vt;
-        // Update the cumulative pose
-        t_ = t_ + R_ * t;
-        R_ = R * R_;
-
-        // Broadcast the transform
-        broadcastTransform(stamp);
-
-        // Print the current pose for debugging
-        RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
     }
 
     void rgbInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
@@ -256,7 +272,7 @@ private:
             cv::cvtColor(current_frame_rgb, current_frame_gray, cv::COLOR_BGR2GRAY);
 
             cv::Mat depth_mask;
-            depth_mask = (current_frame_depth > 0) & (current_frame_depth < 10000);
+            depth_mask = (current_frame_depth > 300) & (current_frame_depth < 3000);
 
             if (prev_frame_valid_) {
                 cv::Mat vis_image = current_frame_rgb.clone();
@@ -264,6 +280,11 @@ private:
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
                 orb_detector_->detectAndCompute(current_frame_gray, depth_mask, current_keypoints, current_descriptors);
+
+                RCLCPP_DEBUG(this->get_logger(), "Current keypoints: %zu, Prev keypoints: %zu", 
+                        current_keypoints.size(), prev_kps_.size());
+                RCLCPP_DEBUG(this->get_logger(), "Current desc rows: %d, Prev desc rows: %d", 
+                        current_descriptors.rows, prev_descriptors_.rows);
 
                 if (current_keypoints.empty() || prev_kps_.empty() || current_descriptors.empty() || prev_descriptors_.empty()) {
                     RCLCPP_WARN(this->get_logger(), "No featured detected in one of the frames.");
@@ -276,6 +297,8 @@ private:
 
                 std::vector<std::vector<cv::DMatch>> matches;
                 matcher_.knnMatch(current_descriptors, prev_descriptors_, matches, 2);
+                // After the knnMatch call, add:
+                RCLCPP_INFO(this->get_logger(), "Number of matches: %zu", matches.size());
 
                 std::vector<cv::DMatch> good_matches;
                 for (size_t i = 0; i < matches.size(); i++) {
@@ -285,6 +308,8 @@ private:
                         good_matches.push_back(matches[i][0]);
                     }
                 }
+                // After the good_matches filtering loop:
+                RCLCPP_DEBUG(this->get_logger(), "Number of good matches: %zu", good_matches.size());
 
                 for (const auto& match : good_matches) {
                     // Get the matched points
@@ -323,7 +348,7 @@ private:
                 // Publish camera info if available
                 if (latest_rgb_camera_info_) {
                     auto camera_info = *latest_rgb_camera_info_;
-                    camera_info.header = rgb_msg->header;  // Use the same header as the image
+                    camera_info.header = rgb_msg->header;
                     camera_info_pub_->publish(camera_info);
                 }
                 
@@ -346,7 +371,7 @@ private:
                 // Publish camera info if available
                 if (latest_rgb_camera_info_) {
                     auto camera_info = *latest_rgb_camera_info_;
-                    camera_info.header = rgb_msg->header;  // Use the same header as the image
+                    camera_info.header = rgb_msg->header;
                     camera_info_pub_->publish(camera_info);
                 }
                 
