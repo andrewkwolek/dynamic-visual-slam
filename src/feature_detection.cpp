@@ -20,36 +20,27 @@ public:
     FeatureDetector() : Node("feature_detector")
     {
         // Create subscribers
-        image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-            "/camera/camera/color/image_raw",
-            10,
-            std::bind(&FeatureDetector::imageCallback, this, std::placeholders::_1));
+        rgb_sub_ = this->create_subscription<sensor_msgs::msg::Image>("/camera/camera/color/image_raw", 10, std::bind(&FeatureDetector::rgbCallback, this, std::placeholders::_1));
+        depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>("camera/camera/aligned_depth_to_color/image_raw", 10, std::bind(&FeatureDetector::depthCallback, this, std::placeholders::_1));
+        rgb_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/color/camera_info", 10, std::bind(&FeatureDetector::rgbInfoCallback, this, std::placeholders::_1));
+        depth_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/aligned_depth_to_color/camera_info", 10, std::bind(&FeatureDetector::depthInfoCallback, this, std::placeholders::_1));
 
-        camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-            "/camera/camera/color/camera_info",
-            10,
-            std::bind(&FeatureDetector::cameraInfoCallback, this, std::placeholders::_1));
-        
         // Create publishers
-        image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-            "/feature_detector/features_image",
-            10
-        );
-
-        camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>(
-            "/feature_detector/camera_info",
-            10
-        );
-
+        image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/feature_detector/features_image", 10);
+        camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/feature_detector/camera_info", 10);
+        
+        // Initialize ORB feature detector
         orb_detector_ = cv::ORB::create();
 
         prev_frame_valid_ = false;
 
+        // Create tf broadcasters
         tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
         static_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
 
         matcher_ = cv::BFMatcher(cv::NORM_HAMMING);
 
+        // Create odom frame
         geometry_msgs::msg::TransformStamped odom;
         odom.header.stamp = this->now();
         odom.header.frame_id = "world";
@@ -75,15 +66,18 @@ public:
 
 private:
     // Subscribers
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
-    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rgb_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr rgb_info_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr depth_info_sub_;
 
     //Publishers
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
 
     // Camera info
-    sensor_msgs::msg::CameraInfo::SharedPtr latest_camera_info_;
+    sensor_msgs::msg::CameraInfo::SharedPtr latest_rgb_camera_info_;
+    sensor_msgs::msg::CameraInfo::SharedPtr latest_depth_camera_info_;
     cv::Mat camera_matrix_;
     cv::Mat dist_coeffs_;
 
@@ -174,8 +168,8 @@ private:
         RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
     }
 
-    void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
-        latest_camera_info_ = msg;
+    void rgbInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
+        latest_rgb_camera_info_ = msg;
 
         camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
         camera_matrix_.at<double>(0, 0) = msg->k[0];
@@ -189,9 +183,13 @@ private:
             dist_coeffs_.at<double>(0, i) = msg->d[i];
         }
     }
+
+    void depthInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
+        latest_depth_camera_info_ = msg;
+    }
     
     // Callback function for processing incoming images
-    void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
+    void rgbCallback(const sensor_msgs::msg::Image::SharedPtr msg)
     {
         try {
             // Convert ROS image message to OpenCV image
@@ -263,8 +261,8 @@ private:
                 image_pub_->publish(*out_msg);
 
                 // Publish camera info if available
-                if (latest_camera_info_) {
-                    auto camera_info = *latest_camera_info_;
+                if (latest_rgb_camera_info_) {
+                    auto camera_info = *latest_rgb_camera_info_;
                     camera_info.header = msg->header;  // Use the same header as the image
                     camera_info_pub_->publish(camera_info);
                 }
@@ -285,8 +283,8 @@ private:
                 prev_kps_ = current_keypoints;
 
                 // Publish camera info if available
-                if (latest_camera_info_) {
-                    auto camera_info = *latest_camera_info_;
+                if (latest_rgb_camera_info_) {
+                    auto camera_info = *latest_rgb_camera_info_;
                     camera_info.header = msg->header;  // Use the same header as the image
                     camera_info_pub_->publish(camera_info);
                 }
@@ -298,6 +296,10 @@ private:
         } catch (cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         }
+    }
+
+    void depthCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
+
     }
 };
 
