@@ -20,9 +20,10 @@ find_package(tf2_eigen REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(DBoW2 REQUIRED)
+find_package(Ceres REQUIRED)
 
 add_executable(frontend src/feature_detection.cpp)
-ament_target_dependencies(frontend rclcpp sensor_msgs OpenCV cv_bridge tf2_ros tf2 tf2_eigen Eigen3 message_filters)
+ament_target_dependencies(frontend rclcpp sensor_msgs OpenCV cv_bridge tf2_ros tf2 tf2_eigen Eigen3 message_filters Ceres DBoW2)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

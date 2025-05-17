@@ -20,6 +20,7 @@
   <depend>eigen</depend>
   <depend>message_filters</depend>
   <depend>dbow2</depend>
+  <depend>ceres</depend>
 
   <exec_depend>ros2launch</exec_depend>
 
