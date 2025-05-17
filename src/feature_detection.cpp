@@ -298,7 +298,7 @@ private:
                 std::vector<std::vector<cv::DMatch>> matches;
                 matcher_.knnMatch(current_descriptors, prev_descriptors_, matches, 2);
                 // After the knnMatch call, add:
-                RCLCPP_INFO(this->get_logger(), "Number of matches: %zu", matches.size());
+                RCLCPP_DEBUG(this->get_logger(), "Number of matches: %zu", matches.size());
 
                 std::vector<cv::DMatch> good_matches;
                 for (size_t i = 0; i < matches.size(); i++) {
