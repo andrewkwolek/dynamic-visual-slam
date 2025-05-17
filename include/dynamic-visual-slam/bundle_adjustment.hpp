@@ -158,8 +158,7 @@ struct ReprojectionError {
 class SlidingWindowBA {
 public:
     SlidingWindowBA(int window_size, double fx, double fy, double cx, double cy)
-        : window_size_(window_size), next_landmark_id_(0), next_frame_id_(0),
-          fx_(fx), fy_(fy), cx_(cx), cy_(cy) {}
+        : fx_(fx), fy_(fy), cx_(cx), cy_(cy), window_size_(window_size), next_landmark_id_(0), next_frame_id_(0) {}
 
     // Add a new frame to the sliding window
     int addFrame(const cv::Mat& R, const cv::Mat& t) {
@@ -174,7 +173,7 @@ public:
         frame_queue_.push_back(frame_id);
         
         // Remove old frames if we exceed the window size
-        if (frame_queue_.size() > window_size_) {
+        if (frame_queue_.size() > static_cast<size_t>(window_size_)) {
             int old_frame_id = frame_queue_.front();
             frame_queue_.pop_front();
             

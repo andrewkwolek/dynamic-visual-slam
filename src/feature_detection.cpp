@@ -16,6 +16,7 @@
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
 #include "message_filters/sync_policies/approximate_time.h"
+#include "dynamic-visual-slam/bundle_adjustment.hpp"
 
 class FeatureDetector : public rclcpp::Node
 {
@@ -41,6 +42,8 @@ public:
         
         // Initialize ORB feature detector
         orb_detector_ = cv::ORB::create(800);
+
+        bundle_adjuster_ = std::make_unique<SlidingWindowBA>(5, 0.0, 0.0, 0.0, 0.0);
 
         prev_frame_valid_ = false;
 
@@ -99,6 +102,9 @@ private:
 
     // ORB Feature detector
     cv::Ptr<cv::ORB> orb_detector_;
+
+    // Bundle adjustment
+    std::unique_ptr<SlidingWindowBA> bundle_adjuster_;
 
     // FLANN feature matcher
     cv::BFMatcher matcher_;
@@ -241,6 +247,32 @@ private:
             // Update the cumulative pose
             t_ = t_ + R_ * t_curr_inv;
             R_ = R_ * R_curr_inv;
+            
+            // Add the current frame to the bundle adjustment
+            int frame_id = bundle_adjuster_->addFrame(R_, t_);
+            
+            // Add the observed points to bundle adjustment
+            for (int i = 0; i < inliers.rows; i++) {
+                int idx = inliers.at<int>(i, 0);
+                
+                // Add the 3D point and its 2D observation to bundle adjustment
+                bundle_adjuster_->addObservation(
+                    frame_id,                  // Current frame ID
+                    points2d[idx].x,           // 2D observation x
+                    points2d[idx].y,           // 2D observation y
+                    points3d[idx].x,           // 3D point X
+                    points3d[idx].y,           // 3D point Y
+                    points3d[idx].z            // 3D point Z
+                );
+            }
+            
+            // Run bundle adjustment optimization
+            bundle_adjuster_->optimize(10);  // 10 iterations
+            
+            // Get the optimized pose for the latest frame
+            auto optimized_pose = bundle_adjuster_->getLatestPose();
+            R_ = optimized_pose.first;
+            t_ = optimized_pose.second;
 
             // Broadcast the transform
             broadcastTransform(stamp);
@@ -249,6 +281,9 @@ private:
             RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
         } catch (const cv::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Exception during PnP estimation: %s", e.what());
+            return;
+        } catch (const std::exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "Exception during bundle adjustment: %s", e.what());
             return;
         }
     }
@@ -266,6 +301,16 @@ private:
         rgb_dist_coeffs_ = cv::Mat(1, 5, CV_64F);
         for (int i = 0; i < 5; i++) {
             rgb_dist_coeffs_.at<double>(0, i) = msg->d[i];
+        }
+
+        if (bundle_adjuster_) {
+            bundle_adjuster_.reset(new SlidingWindowBA(
+                5,  // Window size
+                rgb_camera_matrix_.at<double>(0, 0),  // fx
+                rgb_camera_matrix_.at<double>(1, 1),  // fy
+                rgb_camera_matrix_.at<double>(0, 2),  // cx
+                rgb_camera_matrix_.at<double>(1, 2)   // cy
+            ));
         }
     }
 

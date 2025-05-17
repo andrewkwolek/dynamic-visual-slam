@@ -5,7 +5,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-set(DBoW2_DIR "$ENV{HOME}/ws/DBoW2/build")
+# set(DBoW2_DIR "$ENV{HOME}/ws/DBoW2/build")
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
@@ -19,11 +19,22 @@ find_package(tf2 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(message_filters REQUIRED)
-find_package(DBoW2 REQUIRED)
+# find_package(DBoW2 REQUIRED)
 find_package(Ceres REQUIRED)
 
+include_directories(
+  include
+  ${OpenCV_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+  ${CERES_INCLUDE_DIRS}
+)
+
 add_executable(frontend src/feature_detection.cpp)
-ament_target_dependencies(frontend rclcpp sensor_msgs OpenCV cv_bridge tf2_ros tf2 tf2_eigen Eigen3 message_filters Ceres DBoW2)
+ament_target_dependencies(frontend rclcpp sensor_msgs OpenCV cv_bridge tf2_ros tf2 tf2_eigen Eigen3 message_filters Ceres)
+
+target_link_libraries(frontend
+  ${CERES_LIBRARIES}
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -55,4 +66,10 @@ install(
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(
+  DIRECTORY include/
+  DESTINATION include/
+)
+
+ament_export_include_directories(include)
 ament_package()
