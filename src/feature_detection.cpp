@@ -154,9 +154,10 @@ private:
         tf_broadcaster_->sendTransform(transform_stamped);
     }
 
-    void estimateCameraPose(const std::vector<cv::Point2f>& prev_pts, const std::vector<cv::Point2f>& curr_pts, const std::vector<uchar>& status, const cv::Mat& prev_depth, const cv::Mat& curr_depth, const rclcpp::Time& stamp) {
+    void estimateCameraPose(const std::vector<cv::Point2f>& prev_pts, const std::vector<cv::Point2f>& curr_pts, const std::vector<uchar>& status, const cv::Mat& prev_depth, const rclcpp::Time& stamp) {
         // Only use points that were successfully tracked
-        std::vector<cv::Point3f> points1, points2;
+        std::vector<cv::Point3f> points3d;
+        std::vector<cv::Point2f> points2d;
 
         if (rgb_camera_matrix_.empty()) {
             RCLCPP_ERROR(this->get_logger(), "RGB camera matrix is empty!");
@@ -174,46 +175,72 @@ private:
 
                 int x_prev = std::round(prev_pts[i].x);
                 int y_prev = std::round(prev_pts[i].y);
-                int x_curr = std::round(curr_pts[i].x);
-                int y_curr = std::round(curr_pts[i].y);
-
+                
+                // Get the depth value at the previous point
                 float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
-                float d_curr = curr_depth.at<uint16_t>(y_curr, x_curr) * 0.001f;
-
+                
+                // Skip points with invalid depth
+                if (d_prev <= 0.0f || d_prev > 10.0f) continue;
+                
+                // Back-project to 3D point
                 cv::Point3f pt3d_prev((x_prev - cx) * d_prev / fx, (y_prev - cy) * d_prev / fy, d_prev);
-                cv::Point3f pt3d_curr((x_curr - cx) * d_curr / fx, (y_curr - cy) * d_curr / fy, d_curr);
-
-                points1.push_back(pt3d_prev);
-                points2.push_back(pt3d_curr);
+                
+                // Use current 2D points for PnP
+                points3d.push_back(pt3d_prev);
+                points2d.push_back(curr_pts[i]);
             }
         } catch (const cv::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Exception during point processing: %s", e.what());
             return;
         }
 
-
-        // Need at least 5 matching points
-        if (points1.size() < 4) {
-            RCLCPP_WARN(this->get_logger(), "Not enough matching points or no camera info for pose estimation");
+        // Need at least 4 matching points for PnP
+        if (points3d.size() < 4) {
+            RCLCPP_WARN(this->get_logger(), "Not enough matching points for pose estimation: %zu", points3d.size());
             return;
         }
 
         try {
-            // Recover R and t from the essential matrix
-            cv::Mat T, R, t, inliers;
-            if (!cv::estimateAffine3D(points1, points2, T, inliers, 0.03)) {
-                RCLCPP_WARN(this->get_logger(), "Failed to estimate rigid transformation");
+            // Use solvePnPRANSAC to estimate pose
+            cv::Mat rvec, tvec, inliers;
+            bool success = cv::solvePnPRansac(
+                points3d,           // 3D points from previous frame
+                points2d,           // 2D points in current frame
+                rgb_camera_matrix_, // Camera matrix
+                rgb_dist_coeffs_,   // Distortion coefficients
+                rvec,               // Output rotation vector
+                tvec,               // Output translation vector
+                false,              // Use provided R,t as initial guess?
+                100,                // Number of RANSAC iterations
+                8.0,                // Reprojection error threshold
+                0.99,               // Confidence
+                inliers,            // Output inliers
+                cv::SOLVEPNP_ITERATIVE // Method
+            );
+
+            if (!success || inliers.rows < 4) {
+                RCLCPP_WARN(this->get_logger(), "PnP estimation failed or too few inliers (%d)", inliers.rows);
                 return;
             }
 
-            R = T(cv::Range(0, 3), cv::Range(0, 3));
-            t = T(cv::Range(0, 3), cv::Range(3, 4));
+            RCLCPP_INFO(this->get_logger(), "PnP successful with %d inliers out of %zu points", inliers.rows, points3d.size());
 
-            cv::SVD svd(R);
-            R = svd.u * svd.vt;
+            // Convert rotation vector to rotation matrix
+            cv::Mat R_curr;
+            cv::Rodrigues(rvec, R_curr);
+            
+            // For visualization, calculate how many inliers we have
+            double inlier_ratio = static_cast<double>(inliers.rows) / points3d.size();
+            RCLCPP_DEBUG(this->get_logger(), "Inlier ratio: %.2f%%", inlier_ratio * 100.0);
+
+            // Update the global pose (camera_link in world frame)
+            // First convert current camera-to-previous transformation to previous-to-current
+            cv::Mat R_curr_inv = R_curr.t();
+            cv::Mat t_curr_inv = -R_curr_inv * tvec;
+
             // Update the cumulative pose
-            t_ = t_ + R_ * t;
-            R_ = R * R_;
+            t_ = t_ + R_ * t_curr_inv;
+            R_ = R_ * R_curr_inv;
 
             // Broadcast the transform
             broadcastTransform(stamp);
@@ -221,7 +248,7 @@ private:
             // Print the current pose for debugging
             RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
         } catch (const cv::Exception& e) {
-            RCLCPP_ERROR(this->get_logger(), "Exception during transformation estimation: %s", e.what());
+            RCLCPP_ERROR(this->get_logger(), "Exception during PnP estimation: %s", e.what());
             return;
         }
     }
@@ -331,7 +358,7 @@ private:
                     std::vector<uchar> status(good_matches.size(), 1);
                     
                     // Estimate camera pose
-                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, prev_frame_depth_, current_frame_depth, rgb_msg->header.stamp);
+                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, prev_frame_depth_, rgb_msg->header.stamp);
                 }
 
                 prev_points_.clear();
