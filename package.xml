@@ -8,7 +8,7 @@
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-
+  
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>opencv</depend>
@@ -19,6 +19,7 @@
   <depend>tf2_eigen</depend>
   <depend>eigen</depend>
   <depend>message_filters</depend>
+  <depend>dbow2</depend>
 
   <exec_depend>ros2launch</exec_depend>
 
