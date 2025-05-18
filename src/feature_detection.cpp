@@ -43,7 +43,7 @@ public:
         // Initialize ORB feature detector
         orb_detector_ = cv::ORB::create(800);
 
-        bundle_adjuster_ = std::make_unique<SlidingWindowBA>(5, 0.0, 0.0, 0.0, 0.0);
+        bundle_adjuster_ = std::make_unique<SlidingWindowBA>(30, 0.0, 0.0, 0.0, 0.0);
 
         prev_frame_valid_ = false;
 
@@ -229,7 +229,7 @@ private:
                 return;
             }
 
-            RCLCPP_INFO(this->get_logger(), "PnP successful with %d inliers out of %zu points", inliers.rows, points3d.size());
+            RCLCPP_DEBUG(this->get_logger(), "PnP successful with %d inliers out of %zu points", inliers.rows, points3d.size());
 
             // Convert rotation vector to rotation matrix
             cv::Mat R_curr;
@@ -267,7 +267,7 @@ private:
             }
             
             // Run bundle adjustment optimization
-            bundle_adjuster_->optimize(10);  // 10 iterations
+            bundle_adjuster_->optimize(30);
             
             // Get the optimized pose for the latest frame
             auto optimized_pose = bundle_adjuster_->getLatestPose();

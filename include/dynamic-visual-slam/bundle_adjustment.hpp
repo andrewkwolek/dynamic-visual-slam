@@ -227,7 +227,7 @@ public:
     }
 
     // Run bundle adjustment on the current sliding window using Levenberg-Marquardt
-    void optimize(int num_iterations = 10) {
+    void optimize(int num_iterations) {
         // Create the Ceres problem
         ceres::Problem problem;
         
