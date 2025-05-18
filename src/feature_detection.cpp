@@ -76,19 +76,24 @@ public:
         camera_link.transform.translation.y = 0.0;
         camera_link.transform.translation.z = 0.0;
 
-        tf2::Quaternion q;
-        q.setRPY(-M_PI/2, 0, 0);
-        camera_link.transform.rotation.x = q.x();
-        camera_link.transform.rotation.y = q.y();
-        camera_link.transform.rotation.z = q.z();
-        camera_link.transform.rotation.w = q.w();
+        // tf2::Quaternion q;
+        // q.setRPY(-M_PI/2, 0, 0);
+        // camera_link.transform.rotation.x = q.x();
+        // camera_link.transform.rotation.y = q.y();
+        // camera_link.transform.rotation.z = q.z();
+        // camera_link.transform.rotation.w = q.w();
+
+        camera_link.transform.rotation.x = 0.0;
+        camera_link.transform.rotation.y = 0.0;
+        camera_link.transform.rotation.z = 0.0;
+        camera_link.transform.rotation.w = 1.0;
 
         static_broadcaster_->sendTransform(camera_link);
 
-        R_ = cv::Mat::zeros(3, 3, CV_64F);
-        R_.at<double>(0, 0) = 1.0;
-        R_.at<double>(2, 1) = -1.0;
-        R_.at<double>(1, 2) = 1.0;
+        R_ = cv::Mat::eye(3, 3, CV_64F);
+        // R_.at<double>(0, 0) = 1.0;
+        // R_.at<double>(2, 1) = -1.0;
+        // R_.at<double>(1, 2) = 1.0;
         t_ = cv::Mat::zeros(3, 1, CV_64F);
 
         rgb_camera_matrix_ = cv::Mat();
@@ -267,6 +272,42 @@ private:
             // Update the cumulative pose
             t_ = t_ + R_ * t_curr_inv;
             R_ = R_ * R_curr_inv;
+
+            // Define the transformation matrix from camera optical frame to ROS frame
+            cv::Mat T_optical_to_ros = cv::Mat::eye(4, 4, CV_64F);
+            
+            // For RealSense cameras and standard ROS conventions:
+            // X_ros = Z_optical
+            // Y_ros = -X_optical
+            // Z_ros = -Y_optical
+            T_optical_to_ros.at<double>(0, 0) = 0.0;  // Optical Z → ROS X
+            T_optical_to_ros.at<double>(0, 1) = 0.0;
+            T_optical_to_ros.at<double>(0, 2) = 1.0;
+            
+            T_optical_to_ros.at<double>(1, 0) = -1.0; // Optical -X → ROS Y
+            T_optical_to_ros.at<double>(1, 1) = 0.0;
+            T_optical_to_ros.at<double>(1, 2) = 0.0;
+            
+            T_optical_to_ros.at<double>(2, 0) = 0.0;  // Optical -Y → ROS Z
+            T_optical_to_ros.at<double>(2, 1) = -1.0;
+            T_optical_to_ros.at<double>(2, 2) = 0.0;
+
+            // Create transformation matrix in optical frame
+            cv::Mat T_optical = cv::Mat::eye(4, 4, CV_64F);
+            R_curr_inv.copyTo(T_optical(cv::Rect(0, 0, 3, 3)));
+            t_curr_inv.copyTo(T_optical(cv::Rect(3, 0, 1, 3)));
+            
+            // Transform to ROS frame
+            // This formula converts a transform expressed in optical frame to one expressed in ROS frame
+            cv::Mat T_ros = T_optical_to_ros * T_optical * T_optical_to_ros.inv();
+            
+            // Extract the new rotation and translation in ROS frame
+            cv::Mat R_ros = T_ros(cv::Rect(0, 0, 3, 3));
+            cv::Mat t_ros = T_ros(cv::Rect(3, 0, 1, 3));
+            
+            // Update the cumulative pose using the ROS frame transforms
+            t_ = t_ + R_ * t_ros;
+            R_ = R_ * R_ros;
             
             // // Add the current frame to the bundle adjustment
             // int frame_id = bundle_adjuster_->addFrame(R_, t_);
