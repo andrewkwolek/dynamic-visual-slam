@@ -68,29 +68,6 @@ public:
 
         static_broadcaster_->sendTransform(odom);
 
-        geometry_msgs::msg::TransformStamped initial_camera;
-        initial_camera.header.stamp = this->now();
-        initial_camera.header.frame_id = "odom";
-        initial_camera.child_frame_id = "camera_link";
-        initial_camera.transform.translation.x = 0.0;
-        initial_camera.transform.translation.y = 0.0;
-        initial_camera.transform.translation.z = 0.0;
-
-        // Create a quaternion for 90-degree rotation around the x-axis
-        // This makes:
-        // z-axis point forward (along world's +y)
-        // y-axis point down (along world's -z)
-        // x-axis point right (along world's +x)
-        tf2::Quaternion q_cam;
-        q_cam.setRPY(-M_PI/2, 0, 0); // 90 degrees around x
-
-        initial_camera.transform.rotation.x = q_cam.x();
-        initial_camera.transform.rotation.y = q_cam.y();
-        initial_camera.transform.rotation.z = q_cam.z();
-        initial_camera.transform.rotation.w = q_cam.w();
-
-        static_broadcaster_->sendTransform(initial_camera);
-
         R_ = cv::Mat::eye(3, 3, CV_64F);
         t_ = cv::Mat::zeros(3, 1, CV_64F);
 
@@ -160,25 +137,7 @@ private:
             }
         }
         
-        // Create the base quaternion from the rotation matrix
         Eigen::Quaterniond q(R_eigen);
-        
-        // Define the correction rotation to align with the desired camera frame orientation
-        // This is a 90-degree rotation around the x-axis
-        tf2::Quaternion camera_orientation_correction;
-        camera_orientation_correction.setRPY(-M_PI/2, 0, 0);
-        
-        // Convert tf2::Quaternion to Eigen::Quaterniond
-        Eigen::Quaterniond correction(
-            camera_orientation_correction.w(),
-            camera_orientation_correction.x(),
-            camera_orientation_correction.y(),
-            camera_orientation_correction.z()
-        );
-        
-        // Apply the correction to our rotation
-        // We multiply on the right to apply in the local frame
-        Eigen::Quaterniond q_corrected = q * correction;
         
         // Create the transform message for odom -> camera
         geometry_msgs::msg::TransformStamped transform_stamped;
@@ -191,11 +150,11 @@ private:
         transform_stamped.transform.translation.y = t_.at<double>(1);
         transform_stamped.transform.translation.z = t_.at<double>(2);
         
-        // Set the rotation with the corrected quaternion
-        transform_stamped.transform.rotation.x = q_corrected.x();
-        transform_stamped.transform.rotation.y = q_corrected.y();
-        transform_stamped.transform.rotation.z = q_corrected.z();
-        transform_stamped.transform.rotation.w = q_corrected.w();
+        // Set the rotation
+        transform_stamped.transform.rotation.x = q.x();
+        transform_stamped.transform.rotation.y = q.y();
+        transform_stamped.transform.rotation.z = q.z();
+        transform_stamped.transform.rotation.w = q.w();
         
         // Broadcast the transform
         tf_broadcaster_->sendTransform(transform_stamped);
