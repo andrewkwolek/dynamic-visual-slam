@@ -211,7 +211,7 @@ private:
                 float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
                 
                 // Skip points with invalid depth
-                if (d_prev <= 0.0f || d_prev > 10.0f) continue;
+                if (d_prev <= 0.3f || d_prev > 6.0f) continue;
                 
                 // Back-project to 3D point
                 cv::Point3f pt3d_prev((x_prev - cx) * d_prev / fx, (y_prev - cy) * d_prev / fy, d_prev);
@@ -234,44 +234,40 @@ private:
         try {
             // Use solvePnPRANSAC to estimate pose
             cv::Mat rvec, tvec, inliers;
-            bool success = cv::solvePnPRansac(
+            bool use_initial_guess = false;
+            
+            // Use previous pose as initial guess if available
+            if (!R_.empty() && !t_.empty()) {
+                // Convert rotation matrix to rotation vector
+                cv::Rodrigues(R_, rvec);
+                tvec = t_.clone();
+                use_initial_guess = true;
+            }
+
+            bool success = cv::solvePnP(
                 points3d,           // 3D points from previous frame
                 points2d,           // 2D points in current frame
                 rgb_camera_matrix_, // Camera matrix
                 rgb_dist_coeffs_,   // Distortion coefficients
                 rvec,               // Output rotation vector
                 tvec,               // Output translation vector
-                false,              // Use provided R,t as initial guess?
-                100,                // Number of RANSAC iterations
-                8.0,                // Reprojection error threshold
-                0.99,               // Confidence
-                inliers,            // Output inliers
+                use_initial_guess,  // Use provided R,t as initial guess?
                 cv::SOLVEPNP_ITERATIVE // Method
             );
 
-            if (!success || inliers.rows < 4) {
-                RCLCPP_WARN(this->get_logger(), "PnP estimation failed or too few inliers (%d)", inliers.rows);
+            if (!success) {
+                RCLCPP_WARN(this->get_logger(), "PnP estimation failed.");
                 return;
             }
-
-            RCLCPP_DEBUG(this->get_logger(), "PnP successful with %d inliers out of %zu points", inliers.rows, points3d.size());
 
             // Convert rotation vector to rotation matrix
             cv::Mat R_curr;
             cv::Rodrigues(rvec, R_curr);
-            
-            // For visualization, calculate how many inliers we have
-            double inlier_ratio = static_cast<double>(inliers.rows) / points3d.size();
-            RCLCPP_DEBUG(this->get_logger(), "Inlier ratio: %.2f%%", inlier_ratio * 100.0);
 
             // Update the global pose (camera_link in world frame)
             // First convert current camera-to-previous transformation to previous-to-current
             cv::Mat R_curr_inv = R_curr.t();
             cv::Mat t_curr_inv = -R_curr_inv * tvec;
-
-            // Update the cumulative pose
-            t_ = t_ + R_ * t_curr_inv;
-            R_ = R_ * R_curr_inv;
 
             // Define the transformation matrix from camera optical frame to ROS frame
             cv::Mat T_optical_to_ros = cv::Mat::eye(4, 4, CV_64F);
@@ -406,14 +402,14 @@ private:
             cv::cvtColor(current_frame_rgb, current_frame_gray, cv::COLOR_BGR2GRAY);
 
             cv::Mat depth_mask;
-            depth_mask = (current_frame_depth > 300) & (current_frame_depth < 3000);
+            depth_mask = (current_frame_depth > 300) & (current_frame_depth < 6000);
 
             if (prev_frame_valid_) {
                 cv::Mat vis_image = current_frame_rgb.clone();
                 
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                orb_detector_->detectAndCompute(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors);
+                orb_detector_->detectAndCompute(current_frame_gray, depth_mask, current_keypoints, current_descriptors);
 
                 RCLCPP_DEBUG(this->get_logger(), "Current keypoints: %zu, Prev keypoints: %zu", 
                         current_keypoints.size(), prev_kps_.size());
