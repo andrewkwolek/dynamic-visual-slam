@@ -227,11 +227,41 @@ private:
             cv::Mat rvec, tvec, inliers;
             bool use_initial_guess = false;
             
+            cv::Mat T_ros_to_optical = cv::Mat::eye(4, 4, CV_64F);
+            
+            // For RealSense cameras and standard ROS conventions:
+            // X_optical = -Y_ros
+            // Y_optical = -Z_ros
+            // Z_optical = X_ros
+            T_ros_to_optical.at<double>(0, 0) = 0.0;   // ROS -Y → Optical X
+            T_ros_to_optical.at<double>(0, 1) = -1.0;
+            T_ros_to_optical.at<double>(0, 2) = 0.0;
+                        
+            T_ros_to_optical.at<double>(1, 0) = 0.0;   // ROS -Z → Optical Y
+            T_ros_to_optical.at<double>(1, 1) = 0.0;
+            T_ros_to_optical.at<double>(1, 2) = -1.0;
+                        
+            T_ros_to_optical.at<double>(2, 0) = 1.0;   // ROS X → Optical Z
+            T_ros_to_optical.at<double>(2, 1) = 0.0;
+            T_ros_to_optical.at<double>(2, 2) = 0.0;
+
             // Use previous pose as initial guess if available
             if (!R_.empty() && !t_.empty()) {
-                // Convert rotation matrix to rotation vector
-                cv::Rodrigues(R_, rvec);
-                tvec = t_.clone();
+                // Create transformation matrix in ROS frame
+                cv::Mat T_ros = cv::Mat::eye(4, 4, CV_64F);
+                R_.copyTo(T_ros(cv::Rect(0, 0, 3, 3)));
+                t_.copyTo(T_ros(cv::Rect(3, 0, 1, 3)));
+                
+                // Transform to optical frame
+                cv::Mat T_optical = T_ros_to_optical.inv() * T_ros * T_ros_to_optical;
+                
+                // Extract the rotation and translation in optical frame
+                cv::Mat R_optical = T_optical(cv::Rect(0, 0, 3, 3));
+                cv::Mat t_optical = T_optical(cv::Rect(3, 0, 1, 3));
+                
+                // Convert rotation matrix to rotation vector for PnP
+                cv::Rodrigues(R_optical, rvec);
+                tvec = t_optical.clone();
                 use_initial_guess = true;
             }
 
@@ -242,7 +272,7 @@ private:
                 rgb_dist_coeffs_,   // Distortion coefficients
                 rvec,               // Output rotation vector
                 tvec,               // Output translation vector
-                true,  // Use provided R,t as initial guess?
+                use_initial_guess,  // Use provided R,t as initial guess?
                 100,
                 8.0f,
                 0.99,
