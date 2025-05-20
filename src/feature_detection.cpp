@@ -244,14 +244,18 @@ private:
                 use_initial_guess = true;
             }
 
-            bool success = cv::solvePnP(
+            bool success = cv::solvePnPRansac(
                 points3d,           // 3D points from previous frame
                 points2d,           // 2D points in current frame
                 rgb_camera_matrix_, // Camera matrix
                 rgb_dist_coeffs_,   // Distortion coefficients
                 rvec,               // Output rotation vector
                 tvec,               // Output translation vector
-                use_initial_guess,  // Use provided R,t as initial guess?
+                true,  // Use provided R,t as initial guess?
+                100,
+                8.0f,
+                0.99,
+                inliers,
                 cv::SOLVEPNP_ITERATIVE // Method
             );
 
@@ -446,7 +450,7 @@ private:
                     cv::Point2f curr_pt = current_keypoints[match.queryIdx].pt;
                     
                     // Draw a green circle
-                    cv::circle(vis_image, curr_pt, 5, cv::Scalar(0, 255, 0), 2);
+                    cv::circle(vis_image, curr_pt, 3, cv::Scalar(0, 255, 0), 2);
                 }
 
                 if (good_matches.size() >= 5) {
