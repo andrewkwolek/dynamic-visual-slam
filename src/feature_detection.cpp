@@ -23,7 +23,7 @@ class FeatureDetector : public rclcpp::Node
 public:
     FeatureDetector() : Node("feature_detector")
     {
-        rclcpp::QoS qos = rclcpp::QoS(10);
+        rclcpp::QoS qos = rclcpp::QoS(30);
 
         // Create message filter subscribers
         rgb_sub_.subscribe(this, "/camera/camera/color/image_raw", qos.get_rmw_qos_profile());
@@ -274,7 +274,7 @@ private:
                 tvec,               // Output translation vector
                 use_initial_guess,  // Use provided R,t as initial guess?
                 100,
-                8.0f,
+                2.0f,
                 0.99,
                 inliers,
                 cv::SOLVEPNP_ITERATIVE // Method
