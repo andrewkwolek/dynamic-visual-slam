@@ -218,7 +218,7 @@ public:
     void addObservation(int frame_id, int landmark_id, double x, double y) {
         // Check if frame and landmark exist
         if (frame_poses_.find(frame_id) == frame_poses_.end() || 
-            landmarks_.find(landmark_id) == landmarks_.find(landmark_id)) {
+            landmarks_.find(landmark_id) == landmarks_.end()) {
             return;
         }
         
@@ -246,7 +246,6 @@ public:
             }
             
             // Add a constraint to keep the quaternion normalized
-            // Use the Manifold API for Ceres 2.0+
             problem.SetManifold(pose->rotation, new ceres::EigenQuaternionManifold);
         }
         

@@ -68,6 +68,7 @@ public:
 
         static_broadcaster_->sendTransform(odom);
 
+        // Create camera_link frame
         geometry_msgs::msg::TransformStamped camera_link;
         camera_link.header.stamp = this->now();
         camera_link.header.frame_id = "odom";
@@ -75,13 +76,6 @@ public:
         camera_link.transform.translation.x = 0.0;
         camera_link.transform.translation.y = 0.0;
         camera_link.transform.translation.z = 0.0;
-
-        // tf2::Quaternion q;
-        // q.setRPY(-M_PI/2, 0, 0);
-        // camera_link.transform.rotation.x = q.x();
-        // camera_link.transform.rotation.y = q.y();
-        // camera_link.transform.rotation.z = q.z();
-        // camera_link.transform.rotation.w = q.w();
 
         camera_link.transform.rotation.x = 0.0;
         camera_link.transform.rotation.y = 0.0;
@@ -91,9 +85,6 @@ public:
         static_broadcaster_->sendTransform(camera_link);
 
         R_ = cv::Mat::eye(3, 3, CV_64F);
-        // R_.at<double>(0, 0) = 1.0;
-        // R_.at<double>(2, 1) = -1.0;
-        // R_.at<double>(1, 2) = 1.0;
         t_ = cv::Mat::zeros(3, 1, CV_64F);
 
         rgb_camera_matrix_ = cv::Mat();
