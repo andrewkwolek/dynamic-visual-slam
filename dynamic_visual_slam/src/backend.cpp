@@ -1,4 +1,5 @@
 #include <opencv2/opencv.hpp>
+#include <memory>
 
 #include "rclcpp/rclcpp.hpp"
 #include "dynamic-visual-slam/bundle_adjustment.hpp"
