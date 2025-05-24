@@ -32,7 +32,10 @@ include_directories(
 add_executable(frontend src/feature_detection.cpp)
 ament_target_dependencies(frontend rclcpp sensor_msgs OpenCV cv_bridge tf2_ros tf2 tf2_eigen Eigen3 message_filters Ceres)
 
-target_link_libraries(frontend
+add_executable(backend src/backend.cpp)
+ament_target_dependencies(backend rclcpp OpenCV tf2_ros tf2 tf2_eigen Eigen3 Ceres)
+
+target_link_libraries(backend
   ${CERES_LIBRARIES}
 )
 
@@ -62,7 +65,7 @@ install(DIRECTORY
 
 # Install nodes
 install(
-  TARGETS frontend
+  TARGETS frontend backend
   DESTINATION lib/${PROJECT_NAME}
 )
 

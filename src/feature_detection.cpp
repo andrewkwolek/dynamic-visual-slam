@@ -41,21 +41,19 @@ public:
         camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/feature_detector/camera_info", qos);
         
         // Initialize ORB feature detector
-        // orb_detector_ = cv::ORB::create(800);
+        orb_detector_ = cv::ORB::create(800);
 
-        orb_detector_ = cv::ORB::create(
-            1200,        // More features for wider FOV
-            1.2f,        // Scale factor
-            8,           // Pyramid levels  
-            31,          // Edge threshold
-            0,           // First level
-            2,           // WTA_K
-            cv::ORB::HARRIS_SCORE,
-            31,          // Patch size
-            10           // Fast threshold - adjust for D455 noise
-        );
-
-        // bundle_adjuster_ = std::make_unique<SlidingWindowBA>(30, 0.0, 0.0, 0.0, 0.0);
+        // orb_detector_ = cv::ORB::create(
+        //     1200,        // More features for wider FOV
+        //     1.2f,        // Scale factor
+        //     8,           // Pyramid levels  
+        //     31,          // Edge threshold
+        //     0,           // First level
+        //     2,           // WTA_K
+        //     cv::ORB::HARRIS_SCORE,
+        //     31,          // Patch size
+        //     10           // Fast threshold - adjust for D455 noise
+        // );
 
         prev_frame_valid_ = false;
 
@@ -130,9 +128,6 @@ private:
 
     // ORB Feature detector
     cv::Ptr<cv::ORB> orb_detector_;
-
-    // Bundle adjustment
-    std::unique_ptr<SlidingWindowBA> bundle_adjuster_;
 
     // FLANN feature matcher
     cv::BFMatcher matcher_;
@@ -248,7 +243,7 @@ private:
                 float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
                 
                 // Skip points with invalid depth
-                if (d_prev <= 0.6f || d_prev > 6.0f) {
+                if (d_prev <= 0.3f || d_prev > 3.0f) {
                     continue;
                 }
                 
@@ -326,7 +321,6 @@ private:
             t_curr_inv.copyTo(T_optical(cv::Rect(3, 0, 1, 3)));
             
             // Transform to ROS frame
-            // This formula converts a transform expressed in optical frame to one expressed in ROS frame
             cv::Mat T_ros = T_optical_to_ros * T_optical * T_optical_to_ros.inv();
             
             // Extract the new rotation and translation in ROS frame
@@ -340,7 +334,6 @@ private:
             }
             
             // Update the cumulative pose using the ROS frame transforms
-            // This is the correct way to compose poses
             t_ = t_ + R_ * t_ros;
             R_ = R_ * R_ros;
 
@@ -371,17 +364,6 @@ private:
         for (int i = 0; i < 5; i++) {
             rgb_dist_coeffs_.at<double>(0, i) = msg->d[i];
         }
-
-        // if (!bundle_adjuster_) {
-        //     bundle_adjuster_ = std::make_unique<SlidingWindowBA>(
-        //         10,  // Window size (increased from 5 to 10 for stability)
-        //         rgb_camera_matrix_.at<double>(0, 0),  // fx
-        //         rgb_camera_matrix_.at<double>(1, 1),  // fy
-        //         rgb_camera_matrix_.at<double>(0, 2),  // cx
-        //         rgb_camera_matrix_.at<double>(1, 2)   // cy
-        //     );
-        //     RCLCPP_INFO(this->get_logger(), "Initialized Bundle Adjuster with camera parameters");
-        // }
     }
 
     void depthInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
@@ -414,7 +396,7 @@ private:
             cv::cvtColor(current_frame_rgb, current_frame_gray, cv::COLOR_BGR2GRAY);
 
             cv::Mat depth_mask;
-            depth_mask = (current_frame_depth > 600) & (current_frame_depth < 6000);
+            depth_mask = (current_frame_depth > 300) & (current_frame_depth < 3000);
 
             if (prev_frame_valid_) {
                 cv::Mat vis_image = current_frame_rgb.clone();
