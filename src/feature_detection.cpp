@@ -41,7 +41,19 @@ public:
         camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/feature_detector/camera_info", qos);
         
         // Initialize ORB feature detector
-        orb_detector_ = cv::ORB::create(800);
+        // orb_detector_ = cv::ORB::create(800);
+
+        orb_detector_ = cv::ORB::create(
+            1200,        // More features for wider FOV
+            1.2f,        // Scale factor
+            8,           // Pyramid levels  
+            31,          // Edge threshold
+            0,           // First level
+            2,           // WTA_K
+            cv::ORB::HARRIS_SCORE,
+            31,          // Patch size
+            10           // Fast threshold - adjust for D455 noise
+        );
 
         // bundle_adjuster_ = std::make_unique<SlidingWindowBA>(30, 0.0, 0.0, 0.0, 0.0);
 
@@ -293,19 +305,14 @@ private:
                 use_initial_guess = true;
             }
 
-            bool success = cv::solvePnPRansac(
+            bool success = cv::solvePnP(
                 points3d,           // 3D points from previous frame
                 points2d,           // 2D points in current frame
                 rgb_camera_matrix_, // Camera matrix
                 rgb_dist_coeffs_,   // Distortion coefficients
                 rvec,               // Output rotation vector
                 tvec,               // Output translation vector
-                use_initial_guess,  // Use provided R,t as initial guess?
-                100,
-                4.0f,
-                0.99,
-                inliers,
-                cv::SOLVEPNP_ITERATIVE // Method
+                use_initial_guess  // Use provided R,t as initial guess?
             );
 
             if (!success) {
@@ -482,44 +489,67 @@ private:
                     return;
                 }
 
-                std::vector<std::vector<cv::DMatch>> matches;
-                matcher_.knnMatch(current_descriptors, prev_descriptors_, matches, 2);
-                // After the knnMatch call, add:
-                RCLCPP_DEBUG(this->get_logger(), "Number of matches: %zu", matches.size());
+                std::vector<cv::DMatch> all_matches;
+                matcher_.match(current_descriptors, prev_descriptors_, all_matches);
 
-                // Change to RANSAC for outlier detection
-                // OpenCV RANSAC demo
-                std::vector<cv::DMatch> good_matches;
-                for (size_t i = 0; i < matches.size(); i++) {
-                    if (matches[i].size() < 2) continue;
-                    
-                    if (matches[i][0].distance < 0.6 * matches[i][1].distance) {
-                        good_matches.push_back(matches[i][0]);
+                RCLCPP_DEBUG(this->get_logger(), "Number of initial matches: %zu", all_matches.size());
+
+                // Optional: Filter by descriptor distance
+                std::vector<cv::DMatch> distance_filtered_matches;
+                float max_distance = 50.0f; 
+
+                for (const auto& match : all_matches) {
+                    if (match.distance < max_distance) {
+                        distance_filtered_matches.push_back(match);
                     }
                 }
-                // After the good_matches filtering loop:
-                RCLCPP_DEBUG(this->get_logger(), "Number of good matches: %zu", good_matches.size());
 
-                for (const auto& match : good_matches) {
-                    // Get the matched points
-                    cv::Point2f curr_pt = current_keypoints[match.queryIdx].pt;
+                // Apply RANSAC with fundamental matrix for geometric consistency
+                std::vector<cv::DMatch> geometrically_consistent_matches;
+
+                if (distance_filtered_matches.size() >= 8) {
+                    // Extract point correspondences
+                    std::vector<cv::Point2f> prev_pts, curr_pts;
+                    for (const auto& match : distance_filtered_matches) {
+                        prev_pts.push_back(prev_kps_[match.trainIdx].pt);
+                        curr_pts.push_back(current_keypoints[match.queryIdx].pt);
+                    }
                     
-                    // Draw a green circle
+                    // Use fundamental matrix RANSAC for outlier detection
+                    std::vector<uchar> inliers_mask;
+                    cv::Mat fundamental_matrix = cv::findFundamentalMat(prev_pts, curr_pts, inliers_mask, cv::FM_RANSAC, 2.0, 0.99);
+                    
+                    // Extract geometrically consistent matches (these are your "good_matches")
+                    for (size_t i = 0; i < inliers_mask.size(); i++) {
+                        if (inliers_mask[i]) {
+                            geometrically_consistent_matches.push_back(distance_filtered_matches[i]);
+                        }
+                    }
+                    
+                    RCLCPP_DEBUG(this->get_logger(), "Fundamental matrix RANSAC kept %zu/%zu matches", 
+                                geometrically_consistent_matches.size(), distance_filtered_matches.size());
+                } else {
+                    geometrically_consistent_matches = distance_filtered_matches;
+                    RCLCPP_WARN(this->get_logger(), "Insufficient matches for RANSAC: %zu", distance_filtered_matches.size());
+                }
+
+                // Now use these inliers for pose estimation
+                std::vector<cv::DMatch> good_matches = geometrically_consistent_matches;
+
+                // Convert to the format your existing pose estimation expects
+                std::vector<cv::Point2f> prev_matched_pts, curr_matched_pts;
+                for (const auto& match : good_matches) {
+                    prev_matched_pts.push_back(prev_kps_[match.trainIdx].pt);
+                    curr_matched_pts.push_back(current_keypoints[match.queryIdx].pt);
+                    cv::Point2f curr_pt = current_keypoints[match.queryIdx].pt;
                     cv::circle(vis_image, curr_pt, 3, cv::Scalar(0, 255, 0), 2);
                 }
 
+                // Create status vector (all 1s since these are already filtered inliers)
+                std::vector<uchar> status(good_matches.size(), 1);
+
+                // Call your existing pose estimation function
                 if (good_matches.size() >= 5) {
-                    // Convert keypoints to points for pose estimation
-                    std::vector<cv::Point2f> prev_matched_pts, curr_matched_pts;
-                    for (const auto& match : good_matches) {
-                        prev_matched_pts.push_back(prev_kps_[match.trainIdx].pt);
-                        curr_matched_pts.push_back(current_keypoints[match.queryIdx].pt);
-                    }
-                    
-                    // Create status vector (all 1s since these are good matches)
-                    std::vector<uchar> status(good_matches.size(), 1);
-                    
-                    // Estimate camera pose
                     estimateCameraPose(prev_matched_pts, curr_matched_pts, status, prev_frame_depth_, rgb_msg->header.stamp, good_matches);
                 }
 
