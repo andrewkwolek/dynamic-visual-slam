@@ -16,7 +16,6 @@
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
 #include "message_filters/sync_policies/approximate_time.h"
-#include "dynamic-visual-slam/bundle_adjustment.hpp"
 
 class FeatureDetector : public rclcpp::Node
 {
@@ -42,18 +41,6 @@ public:
         
         // Initialize ORB feature detector
         orb_detector_ = cv::ORB::create(800);
-
-        // orb_detector_ = cv::ORB::create(
-        //     1200,        // More features for wider FOV
-        //     1.2f,        // Scale factor
-        //     8,           // Pyramid levels  
-        //     31,          // Edge threshold
-        //     0,           // First level
-        //     2,           // WTA_K
-        //     cv::ORB::HARRIS_SCORE,
-        //     31,          // Patch size
-        //     10           // Fast threshold - adjust for D455 noise
-        // );
 
         prev_frame_valid_ = false;
 

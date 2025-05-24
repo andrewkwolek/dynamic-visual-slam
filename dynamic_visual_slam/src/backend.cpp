@@ -2,7 +2,7 @@
 #include <memory>
 
 #include "rclcpp/rclcpp.hpp"
-#include "dynamic-visual-slam/bundle_adjustment.hpp"
+#include "dynamic_visual_slam/bundle_adjustment.hpp"
 
 class Backend : public rclcpp::Node 
 {
