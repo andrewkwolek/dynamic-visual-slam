@@ -176,7 +176,32 @@ private:
         tf_broadcaster_->sendTransform(transform_stamped);
     }
 
-    void estimateCameraPose(const std::vector<cv::Point2f>& prev_pts, const std::vector<cv::Point2f>& curr_pts, const std::vector<uchar>& status, const cv::Mat& prev_depth, const rclcpp::Time& stamp) {
+    bool isMotionOutlier(const cv::Mat& R_new, const cv::Mat& t_new) {
+        // Maximum allowed translation between frames (meters)
+        const double MAX_TRANSLATION = 0.5;
+        // Maximum allowed rotation between frames (radians)
+        const double MAX_ROTATION = 0.2;
+        
+        // Check translation magnitude
+        double translation_norm = cv::norm(t_new);
+        if (translation_norm > MAX_TRANSLATION) {
+            RCLCPP_WARN(this->get_logger(), "Translation outlier detected: %f m", translation_norm);
+            
+
+            cv::Mat rvec;
+            cv::Rodrigues(R_new, rvec);
+            double rotation_angle = cv::norm(rvec);
+            if (rotation_angle > MAX_ROTATION) {
+                RCLCPP_WARN(this->get_logger(), "Rotation outlier detected: %f rad", rotation_angle);
+            }
+
+            return true;
+        }
+        
+        return false;
+    }
+
+    void estimateCameraPose(const std::vector<cv::Point2f>& prev_pts, const std::vector<cv::Point2f>& curr_pts, const std::vector<uchar>& status, const cv::Mat& prev_depth, const rclcpp::Time& stamp, const std::vector<cv::DMatch>& good_matches) {
         // Only use points that were successfully tracked
         std::vector<cv::Point3f> points3d;
         std::vector<cv::Point2f> points2d;
@@ -195,14 +220,17 @@ private:
             for (size_t i = 0; i < status.size(); i++) {
                 if (!status[i]) continue;
 
-                int x_prev = std::round(prev_pts[i].x);
-                int y_prev = std::round(prev_pts[i].y);
+                float x_prev = prev_pts[i].x;
+                float y_prev = prev_pts[i].y;
                 
                 // Get the depth value at the previous point
                 float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
                 
                 // Skip points with invalid depth
-                if (d_prev <= 0.3f || d_prev > 6.0f) continue;
+                if (d_prev <= 0.6f || d_prev > 6.0f) {
+                    RCLCPP_WARN(this->get_logger(), "Depth: %f", d_prev);
+                    continue;
+                }
                 
                 // Back-project to 3D point
                 cv::Point3f pt3d_prev((x_prev - cx) * d_prev / fx, (y_prev - cy) * d_prev / fy, d_prev);
@@ -274,7 +302,7 @@ private:
                 tvec,               // Output translation vector
                 use_initial_guess,  // Use provided R,t as initial guess?
                 100,
-                2.0f,
+                4.0f,
                 0.99,
                 inliers,
                 cv::SOLVEPNP_ITERATIVE // Method
@@ -356,6 +384,10 @@ private:
             // R_ = optimized_pose.first;
             // t_ = optimized_pose.second;
 
+            if (isMotionOutlier(R_ros, t_ros)) {
+                RCLCPP_ERROR(this->get_logger(), "Good matches: %ld", good_matches.size());
+            }
+
             // Broadcast the transform
             broadcastTransform(stamp);
 
@@ -427,7 +459,7 @@ private:
             cv::cvtColor(current_frame_rgb, current_frame_gray, cv::COLOR_BGR2GRAY);
 
             cv::Mat depth_mask;
-            depth_mask = (current_frame_depth > 300) & (current_frame_depth < 6000);
+            depth_mask = (current_frame_depth > 600) & (current_frame_depth < 6000);
 
             if (prev_frame_valid_) {
                 cv::Mat vis_image = current_frame_rgb.clone();
@@ -455,11 +487,13 @@ private:
                 // After the knnMatch call, add:
                 RCLCPP_DEBUG(this->get_logger(), "Number of matches: %zu", matches.size());
 
+                // Change to RANSAC for outlier detection
+                // OpenCV RANSAC demo
                 std::vector<cv::DMatch> good_matches;
                 for (size_t i = 0; i < matches.size(); i++) {
                     if (matches[i].size() < 2) continue;
                     
-                    if (matches[i][0].distance < 0.7 * matches[i][1].distance) {
+                    if (matches[i][0].distance < 0.6 * matches[i][1].distance) {
                         good_matches.push_back(matches[i][0]);
                     }
                 }
@@ -486,7 +520,7 @@ private:
                     std::vector<uchar> status(good_matches.size(), 1);
                     
                     // Estimate camera pose
-                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, prev_frame_depth_, rgb_msg->header.stamp);
+                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, prev_frame_depth_, rgb_msg->header.stamp, good_matches);
                 }
 
                 prev_points_.clear();
