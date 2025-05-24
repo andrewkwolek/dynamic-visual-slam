@@ -327,9 +327,7 @@ private:
             // Broadcast the transform
             broadcastTransform(stamp);
 
-            RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f], Inliers: %zu/%zu", 
-                        t_.at<double>(0), t_.at<double>(1), t_.at<double>(2), 
-                        inliers.size(), points3d.size());
+            RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
                         
         } catch (const cv::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Exception during PnP estimation: %s", e.what());
@@ -469,6 +467,8 @@ private:
                 if (good_matches.size() >= 5) {
                     estimateCameraPose(prev_kps_, current_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
                 }
+
+                // ADD PUBLISH TO BACKEND
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
