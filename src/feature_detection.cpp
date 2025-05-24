@@ -213,8 +213,8 @@ private:
         return false;
     }
 
-    void estimateCameraPose(const std::vector<cv::Point2f>& prev_pts, const std::vector<cv::Point2f>& curr_pts, const std::vector<uchar>& status, const cv::Mat& prev_depth, const rclcpp::Time& stamp, const std::vector<cv::DMatch>& good_matches) {
-        // Only use points that were successfully tracked
+    void estimateCameraPose(const std::vector<cv::KeyPoint>& prev_kps, const std::vector<cv::KeyPoint>& curr_kps, const std::vector<cv::DMatch>& good_matches, const cv::Mat& prev_depth, const rclcpp::Time& stamp) {
+        // Build 3D-2D correspondences directly from good_matches
         std::vector<cv::Point3f> points3d;
         std::vector<cv::Point2f> points2d;
 
@@ -229,105 +229,77 @@ private:
         float cy = rgb_camera_matrix_.at<double>(1, 2);
 
         try {
-            for (size_t i = 0; i < status.size(); i++) {
-                if (!status[i]) continue;
-
-                float x_prev = prev_pts[i].x;
-                float y_prev = prev_pts[i].y;
+            // Use good_matches to create 3D-2D correspondences
+            for (const auto& match : good_matches) {
+                // Get previous and current keypoint coordinates
+                cv::Point2f prev_pt = prev_kps[match.trainIdx].pt;
+                cv::Point2f curr_pt = curr_kps[match.queryIdx].pt;
+                
+                int x_prev = static_cast<int>(std::round(prev_pt.x));
+                int y_prev = static_cast<int>(std::round(prev_pt.y));
+                
+                // Check bounds
+                if (x_prev < 0 || y_prev < 0 || 
+                    x_prev >= prev_depth.cols || y_prev >= prev_depth.rows) {
+                    continue;
+                }
                 
                 // Get the depth value at the previous point
                 float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
                 
                 // Skip points with invalid depth
                 if (d_prev <= 0.6f || d_prev > 6.0f) {
-                    RCLCPP_WARN(this->get_logger(), "Depth: %f", d_prev);
                     continue;
                 }
                 
-                // Back-project to 3D point
-                cv::Point3f pt3d_prev((x_prev - cx) * d_prev / fx, (y_prev - cy) * d_prev / fy, d_prev);
+                // Back-project to 3D point using previous frame coordinates
+                cv::Point3f pt3d_prev((prev_pt.x - cx) * d_prev / fx, 
+                                    (prev_pt.y - cy) * d_prev / fy, 
+                                    d_prev);
                 
-                // Use current 2D points for PnP
+                // Use current frame 2D coordinates for PnP
                 points3d.push_back(pt3d_prev);
-                points2d.push_back(curr_pts[i]);
+                points2d.push_back(curr_pt);
             }
         } catch (const cv::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Exception during point processing: %s", e.what());
             return;
         }
 
-        // Need at least 4 matching points for PnP
-        if (points3d.size() < 4) {
+        // Need at least 6 matching points for stable PnP
+        if (points3d.size() < 6) {
             RCLCPP_WARN(this->get_logger(), "Not enough matching points for pose estimation: %zu", points3d.size());
             return;
         }
 
         try {
-            // Use solvePnPRANSAC to estimate pose
-            cv::Mat rvec, tvec, inliers;
-            bool use_initial_guess = false;
+            // Use solvePnPRANSAC for robust estimation
+            cv::Mat rvec, tvec;
+            std::vector<int> inliers;
             
-            cv::Mat T_ros_to_optical = cv::Mat::eye(4, 4, CV_64F);
-            
-            // For RealSense cameras and standard ROS conventions:
-            // X_optical = -Y_ros
-            // Y_optical = -Z_ros
-            // Z_optical = X_ros
-            T_ros_to_optical.at<double>(0, 0) = 0.0;   // ROS -Y → Optical X
-            T_ros_to_optical.at<double>(0, 1) = -1.0;
-            T_ros_to_optical.at<double>(0, 2) = 0.0;
-                        
-            T_ros_to_optical.at<double>(1, 0) = 0.0;   // ROS -Z → Optical Y
-            T_ros_to_optical.at<double>(1, 1) = 0.0;
-            T_ros_to_optical.at<double>(1, 2) = -1.0;
-                        
-            T_ros_to_optical.at<double>(2, 0) = 1.0;   // ROS X → Optical Z
-            T_ros_to_optical.at<double>(2, 1) = 0.0;
-            T_ros_to_optical.at<double>(2, 2) = 0.0;
-
-            // Use previous pose as initial guess if available
-            if (!R_.empty() && !t_.empty()) {
-                // Create transformation matrix in ROS frame
-                cv::Mat T_ros = cv::Mat::eye(4, 4, CV_64F);
-                R_.copyTo(T_ros(cv::Rect(0, 0, 3, 3)));
-                t_.copyTo(T_ros(cv::Rect(3, 0, 1, 3)));
-                
-                // Transform to optical frame
-                cv::Mat T_optical = T_ros_to_optical.inv() * T_ros * T_ros_to_optical;
-                
-                // Extract the rotation and translation in optical frame
-                cv::Mat R_optical = T_optical(cv::Rect(0, 0, 3, 3));
-                cv::Mat t_optical = T_optical(cv::Rect(3, 0, 1, 3));
-                
-                // Convert rotation matrix to rotation vector for PnP
-                cv::Rodrigues(R_optical, rvec);
-                tvec = t_optical.clone();
-                use_initial_guess = true;
-            }
-
-            bool success = cv::solvePnP(
+            bool success = cv::solvePnPRansac(
                 points3d,           // 3D points from previous frame
                 points2d,           // 2D points in current frame
                 rgb_camera_matrix_, // Camera matrix
                 rgb_dist_coeffs_,   // Distortion coefficients
                 rvec,               // Output rotation vector
                 tvec,               // Output translation vector
-                use_initial_guess  // Use provided R,t as initial guess?
+                false               // Don't use extrinsic guess
             );
 
             if (!success) {
-                RCLCPP_WARN(this->get_logger(), "PnP estimation failed.");
+                RCLCPP_WARN(this->get_logger(), "PnP RANSAC failed");
                 return;
             }
 
             // Convert rotation vector to rotation matrix
-            cv::Mat R_curr;
-            cv::Rodrigues(rvec, R_curr);
-
-            // Update the global pose (camera_link in world frame)
+            cv::Mat R_relative;
+            cv::Rodrigues(rvec, R_relative);
+            cv::Mat t_relative = tvec.clone();
+            
             // First convert current camera-to-previous transformation to previous-to-current
-            cv::Mat R_curr_inv = R_curr.t();
-            cv::Mat t_curr_inv = -R_curr_inv * tvec;
+            cv::Mat R_curr_inv = R_relative.t();
+            cv::Mat t_curr_inv = -R_curr_inv * t_relative;
 
             // Define the transformation matrix from camera optical frame to ROS frame
             cv::Mat T_optical_to_ros = cv::Mat::eye(4, 4, CV_64F);
@@ -361,50 +333,26 @@ private:
             cv::Mat R_ros = T_ros(cv::Rect(0, 0, 3, 3));
             cv::Mat t_ros = T_ros(cv::Rect(3, 0, 1, 3));
             
+            // Apply motion filtering to the ROS frame motion
+            if (isMotionOutlier(R_ros, t_ros)) {
+                RCLCPP_WARN(this->get_logger(), "Motion outlier rejected - skipping frame");
+                return;
+            }
+            
             // Update the cumulative pose using the ROS frame transforms
+            // This is the correct way to compose poses
             t_ = t_ + R_ * t_ros;
             R_ = R_ * R_ros;
-            
-            // // Add the current frame to the bundle adjustment
-            // int frame_id = bundle_adjuster_->addFrame(R_, t_);
-            
-            // // Add the observed points to bundle adjustment
-            // for (int i = 0; i < inliers.rows; i++) {
-            //     int idx = inliers.at<int>(i, 0);
-                
-            //     // Add the 3D point and its 2D observation to bundle adjustment
-            //     bundle_adjuster_->addObservation(
-            //         frame_id,                  // Current frame ID
-            //         points2d[idx].x,           // 2D observation x
-            //         points2d[idx].y,           // 2D observation y
-            //         points3d[idx].x,           // 3D point X
-            //         points3d[idx].y,           // 3D point Y
-            //         points3d[idx].z            // 3D point Z
-            //     );
-            // }
-            
-            // // Run bundle adjustment optimization
-            // bundle_adjuster_->optimize(30);
-            
-            // // Get the optimized pose for the latest frame
-            // auto optimized_pose = bundle_adjuster_->getLatestPose();
-            // R_ = optimized_pose.first;
-            // t_ = optimized_pose.second;
-
-            if (isMotionOutlier(R_ros, t_ros)) {
-                RCLCPP_ERROR(this->get_logger(), "Good matches: %ld", good_matches.size());
-            }
 
             // Broadcast the transform
             broadcastTransform(stamp);
 
-            // Print the current pose for debugging
-            RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
+            RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f], Inliers: %zu/%zu", 
+                        t_.at<double>(0), t_.at<double>(1), t_.at<double>(2), 
+                        inliers.size(), points3d.size());
+                        
         } catch (const cv::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Exception during PnP estimation: %s", e.what());
-            return;
-        } catch (const std::exception& e) {
-            RCLCPP_ERROR(this->get_logger(), "Exception during bundle adjustment: %s", e.what());
             return;
         }
     }
@@ -550,7 +498,7 @@ private:
 
                 // Call your existing pose estimation function
                 if (good_matches.size() >= 5) {
-                    estimateCameraPose(prev_matched_pts, curr_matched_pts, status, prev_frame_depth_, rgb_msg->header.stamp, good_matches);
+                    estimateCameraPose(prev_kps_, current_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
                 }
 
                 prev_points_.clear();
