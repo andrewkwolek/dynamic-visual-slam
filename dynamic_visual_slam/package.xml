@@ -21,7 +21,9 @@
   <depend>message_filters</depend>
   <depend>dbow2</depend>
   <depend>ceres</depend>
-
+  <build_depend>dynamic_visual_slam_interfaces</build_depend>
+  
+  <exec_depend>dynamic_visual_slam_interfaces</exec_depend>
   <exec_depend>ros2launch</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

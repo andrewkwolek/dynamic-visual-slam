@@ -17,6 +17,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(message_filters REQUIRED)
+find_package(Ceres REQUIRED)
 find_package(dynamic_visual_slam_interfaces REQUIRED)
 
 include_directories(
