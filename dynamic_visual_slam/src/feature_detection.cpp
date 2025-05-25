@@ -41,6 +41,7 @@ public:
         // Create publishers
         image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/feature_detector/features_image", qos);
         camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/feature_detector/camera_info", qos);
+        keyframe_pub_ = this->create_publisher<dynamic_visual_slam_interfaces::msg::Keyframe>("/frontend/keyframe", qos);
         
         // Initialize ORB feature detector
         orb_detector_ = cv::ORB::create(800);
@@ -91,6 +92,11 @@ public:
         rgb_dist_coeffs_ = cv::Mat();
         depth_camera_matrix_ = cv::Mat();
         depth_dist_coeffs_ = cv::Mat();
+
+        // Keyframe initialization
+        keyframe_id_ = 0;
+        frames_since_last_keyframe_ = 0;
+        has_last_keyframe_ = false;
             
         RCLCPP_INFO(this->get_logger(), "Image processor node initialized");
     }
@@ -107,6 +113,7 @@ private:
     //Publishers
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
+    rclcpp::Publisher<dynamic_visual_slam_interfaces::msg::Keyframe>::SharedPtr keyframe_pub_;
 
     // Camera info
     sensor_msgs::msg::CameraInfo::SharedPtr latest_rgb_camera_info_;
@@ -115,6 +122,14 @@ private:
     cv::Mat rgb_dist_coeffs_;
     cv::Mat depth_camera_matrix_;
     cv::Mat depth_dist_coeffs_;
+    float rgb_fx_;
+    float rgb_fy_;
+    float rgb_cx_;
+    float rgb_cy_;
+    float depth_fx_;
+    float depth_fy_;
+    float depth_cx_;
+    float depth_cy_;
 
     // ORB Feature detector
     cv::Ptr<cv::ORB> orb_detector_;
@@ -140,6 +155,14 @@ private:
     // Camera transform
     cv::Mat R_;
     cv::Mat t_;
+
+    // Keyframe detection
+    long long int keyframe_id_;
+    int frames_since_last_keyframe_;
+    cv::Mat last_keyframe_descriptors_;
+    std::vector<cv::KeyPoint> last_keyframe_keypoints_;
+    cv::Mat last_keyframe_depth_;
+    bool has_last_keyframe_;
 
     void broadcastTransform(const rclcpp::Time& stamp) {
         // First convert rotation matrix to quaternion
@@ -198,6 +221,103 @@ private:
         return false;
     }
 
+    bool isKeyframe(const cv::Mat& current_descriptors) {
+        // Determines if frame should be a keyframe
+        if (!has_last_keyframe_) {
+            has_last_keyframe_ = true;
+            return true;
+        }
+
+        bool tracking_criterion = false;
+        if (!last_keyframe_descriptors_.empty() && !current_descriptors.empty()) {
+            std::vector<cv::DMatch> keyframe_matches;
+            matcher_.match(current_descriptors, last_keyframe_descriptors_, keyframe_matches);
+            
+            // Filter matches
+            std::vector<cv::DMatch> good_keyframe_matches;
+            float max_distance = 50.0f;
+            for (const auto& match : keyframe_matches) {
+                if (match.distance < max_distance) {
+                    good_keyframe_matches.push_back(match);
+                }
+            }
+            
+            tracking_criterion = (good_keyframe_matches.size() < 50);
+        }
+
+        if (frames_since_last_keyframe_ > 10 || tracking_criterion) {
+            frames_since_last_keyframe_ = 0;
+            return true;
+        }
+
+        frames_since_last_keyframe_++;
+        return false;
+    }
+
+    void publishKeyframe(const std::vector<cv::KeyPoint>& current_keypoints, const cv::Mat& current_descriptors, const cv::Mat& current_depth_frame, const rclcpp::Time& stamp) {
+        dynamic_visual_slam_interfaces::msg::Keyframe kf;
+
+        geometry_msgs::msg::Transform transform;
+    
+        // Convert rotation matrix to quaternion
+        Eigen::Matrix3d R_eigen;
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                R_eigen(i, j) = R_.at<double>(i, j);
+            }
+        }
+        Eigen::Quaterniond q(R_eigen);
+        
+        // Set translation
+        transform.translation.x = t_.at<double>(0);
+        transform.translation.y = t_.at<double>(1);
+        transform.translation.z = t_.at<double>(2);
+        
+        // Set rotation (quaternion)
+        transform.rotation.x = q.x();
+        transform.rotation.y = q.y();
+        transform.rotation.z = q.z();
+        transform.rotation.w = q.w();
+
+        kf.pose = transform;
+
+        // Set header
+        kf.header.frame_id = "camera_link";
+        kf.header.stamp = stamp;
+
+        for (size_t i = 0; i < current_keypoints.size(); i++) {
+            cv::Point2f pt = current_keypoints[i].pt;
+            int x = static_cast<int>(std::round(pt.x));
+            int y = static_cast<int>(std::round(pt.y));
+            float pt_depth = current_depth_frame.at<uint16_t>(y, x) * 0.001f;
+            cv::Point3f pt_3d((pt.x - rgb_cx_) * pt_depth / rgb_fx_, (pt.y - rgb_cy_) *pt_depth / rgb_fy_, pt_depth);
+            
+            if (pt_3d.z > 0.3 && pt_3d.z < 3.0) {  // Valid depth range
+                // Create landmark
+                dynamic_visual_slam_interfaces::msg::Landmark landmark;
+                landmark.landmark_id = static_cast<uint64_t>(i);  // Temporary ID (keypoint index)
+                landmark.position.x = pt_3d.x;
+                landmark.position.y = pt_3d.y;
+                landmark.position.z = pt_3d.z;
+                landmark.is_new = true;  // Backend will determine actual novelty
+                
+                // Create observation
+                dynamic_visual_slam_interfaces::msg::Observation obs;
+                obs.landmark_id = static_cast<uint64_t>(i);
+                obs.pixel_x = current_keypoints[i].pt.x;
+                obs.pixel_y = current_keypoints[i].pt.y;
+                
+                kf.landmarks.push_back(landmark);
+                kf.observations.push_back(obs);
+            }
+        }
+
+        last_keyframe_keypoints_ = current_keypoints;
+        last_keyframe_descriptors_ = current_descriptors.clone();
+
+        keyframe_pub_->publish(kf);
+    }
+
     void estimateCameraPose(const std::vector<cv::KeyPoint>& prev_kps, const std::vector<cv::KeyPoint>& curr_kps, const std::vector<cv::DMatch>& good_matches, const cv::Mat& prev_depth, const rclcpp::Time& stamp) {
         // Build 3D-2D correspondences directly from good_matches
         std::vector<cv::Point3f> points3d;
@@ -207,11 +327,6 @@ private:
             RCLCPP_ERROR(this->get_logger(), "RGB camera matrix is empty!");
             return;
         }
-
-        float fx = rgb_camera_matrix_.at<double>(0, 0);
-        float fy = rgb_camera_matrix_.at<double>(1, 1);
-        float cx = rgb_camera_matrix_.at<double>(0, 2);
-        float cy = rgb_camera_matrix_.at<double>(1, 2);
 
         try {
             // Use good_matches to create 3D-2D correspondences
@@ -238,8 +353,8 @@ private:
                 }
                 
                 // Back-project to 3D point using previous frame coordinates
-                cv::Point3f pt3d_prev((prev_pt.x - cx) * d_prev / fx, 
-                                    (prev_pt.y - cy) * d_prev / fy, 
+                cv::Point3f pt3d_prev((prev_pt.x - rgb_cx_) * d_prev / rgb_fx_, 
+                                    (prev_pt.y - rgb_cy_) * d_prev / rgb_fy_, 
                                     d_prev);
                 
                 // Use current frame 2D coordinates for PnP
@@ -342,10 +457,10 @@ private:
         latest_rgb_camera_info_ = msg;
 
         rgb_camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
-        rgb_camera_matrix_.at<double>(0, 0) = msg->k[0];
-        rgb_camera_matrix_.at<double>(0, 2) = msg->k[2];
-        rgb_camera_matrix_.at<double>(1, 1) = msg->k[4];
-        rgb_camera_matrix_.at<double>(1, 2) = msg->k[5];
+        rgb_camera_matrix_.at<double>(0, 0), rgb_fx_ = msg->k[0];
+        rgb_camera_matrix_.at<double>(0, 2), rgb_fy_ = msg->k[2];
+        rgb_camera_matrix_.at<double>(1, 1), rgb_cx_ = msg->k[4];
+        rgb_camera_matrix_.at<double>(1, 2), rgb_cy_ = msg->k[5];
         rgb_camera_matrix_.at<double>(2, 2) = 1.0;
 
         rgb_dist_coeffs_ = cv::Mat(1, 5, CV_64F);
@@ -358,10 +473,10 @@ private:
         latest_depth_camera_info_ = msg;
 
         depth_camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
-        depth_camera_matrix_.at<double>(0, 0) = msg->k[0];
-        depth_camera_matrix_.at<double>(0, 2) = msg->k[2];
-        depth_camera_matrix_.at<double>(1, 1) = msg->k[4];
-        depth_camera_matrix_.at<double>(1, 2) = msg->k[5];
+        depth_camera_matrix_.at<double>(0, 0), depth_fx_ = msg->k[0];
+        depth_camera_matrix_.at<double>(0, 2), depth_fy_ = msg->k[2];
+        depth_camera_matrix_.at<double>(1, 1), depth_cx_ = msg->k[4];
+        depth_camera_matrix_.at<double>(1, 2), depth_cy_ = msg->k[5];
         depth_camera_matrix_.at<double>(2, 2) = 1.0;
 
         depth_dist_coeffs_ = cv::Mat(1, 5, CV_64F);
@@ -472,6 +587,9 @@ private:
                 }
 
                 // ADD PUBLISH TO BACKEND
+                if (isKeyframe(current_descriptors)) {
+                    publishKeyframe(current_keypoints, current_descriptors, current_frame_depth, rgb_msg->header.stamp);
+                }
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
