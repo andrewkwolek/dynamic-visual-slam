@@ -316,6 +316,8 @@ private:
         last_keyframe_descriptors_ = current_descriptors.clone();
 
         keyframe_pub_->publish(kf);
+
+        RCLCPP_INFO(this->get_logger(), "Published KeyFrame!");
     }
 
     void estimateCameraPose(const std::vector<cv::KeyPoint>& prev_kps, const std::vector<cv::KeyPoint>& curr_kps, const std::vector<cv::DMatch>& good_matches, const cv::Mat& prev_depth, const rclcpp::Time& stamp) {
