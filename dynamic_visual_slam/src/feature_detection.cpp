@@ -16,6 +16,9 @@
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
 #include "message_filters/sync_policies/approximate_time.h"
+#include "dynamic_visual_slam_interfaces/msg/keyframe.hpp"
+#include "dynamic_visual_slam_interfaces/msg/observation.hpp"
+#include "dynamic_visual_slam_interfaces/msg/landmark.hpp"
 
 class FeatureDetector : public rclcpp::Node
 {
