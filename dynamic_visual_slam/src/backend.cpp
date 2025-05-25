@@ -23,7 +23,7 @@ private:
 
     rclcpp::Subscription<dynamic_visual_slam_interfaces::msg::Keyframe>::SharedPtr keyframe_sub_;
 
-    void keyframeCallback(const dynamic_visual_slam_interfaces::msg::Keyframe::SharedPtr msg) {
+    void keyframeCallback(const dynamic_visual_slam_interfaces::msg::Keyframe::ConstSharedPtr& msg) {
         RCLCPP_INFO(this->get_logger(), "Received keyframe!");
     }
 };

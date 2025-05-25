@@ -457,10 +457,14 @@ private:
         latest_rgb_camera_info_ = msg;
 
         rgb_camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
-        rgb_camera_matrix_.at<double>(0, 0), rgb_fx_ = msg->k[0];
-        rgb_camera_matrix_.at<double>(0, 2), rgb_fy_ = msg->k[2];
-        rgb_camera_matrix_.at<double>(1, 1), rgb_cx_ = msg->k[4];
-        rgb_camera_matrix_.at<double>(1, 2), rgb_cy_ = msg->k[5];
+        rgb_camera_matrix_.at<double>(0, 0)= msg->k[0];
+        rgb_fx_ = msg->k[0];
+        rgb_camera_matrix_.at<double>(0, 2) = msg->k[2];
+        rgb_cx_ = msg->k[2];
+        rgb_camera_matrix_.at<double>(1, 1) = msg->k[4];
+        rgb_fy_ = msg->k[4];
+        rgb_camera_matrix_.at<double>(1, 2) = msg->k[5];
+        rgb_cy_ = msg->k[5];
         rgb_camera_matrix_.at<double>(2, 2) = 1.0;
 
         rgb_dist_coeffs_ = cv::Mat(1, 5, CV_64F);
@@ -473,10 +477,14 @@ private:
         latest_depth_camera_info_ = msg;
 
         depth_camera_matrix_ = cv::Mat::zeros(3, 3, CV_64F);
-        depth_camera_matrix_.at<double>(0, 0), depth_fx_ = msg->k[0];
-        depth_camera_matrix_.at<double>(0, 2), depth_fy_ = msg->k[2];
-        depth_camera_matrix_.at<double>(1, 1), depth_cx_ = msg->k[4];
-        depth_camera_matrix_.at<double>(1, 2), depth_cy_ = msg->k[5];
+        depth_camera_matrix_.at<double>(0, 0) = msg->k[0];
+        depth_fx_ = msg->k[0];
+        depth_camera_matrix_.at<double>(0, 2) = msg->k[2];
+        depth_cx_ = msg->k[2];
+        depth_camera_matrix_.at<double>(1, 1) = msg->k[4];
+        depth_fy_ = msg->k[4];
+        depth_camera_matrix_.at<double>(1, 2) = msg->k[5];
+        depth_cy_ = msg->k[5];
         depth_camera_matrix_.at<double>(2, 2) = 1.0;
 
         depth_dist_coeffs_ = cv::Mat(1, 5, CV_64F);
