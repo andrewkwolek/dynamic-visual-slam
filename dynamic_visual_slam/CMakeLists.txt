@@ -44,7 +44,8 @@ ament_target_dependencies(frontend
 
 add_executable(backend src/backend.cpp)
 ament_target_dependencies(backend 
-  rclcpp 
+  rclcpp
+  sensor_msgs
   OpenCV 
   tf2_ros 
   tf2 

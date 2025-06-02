@@ -304,11 +304,11 @@ public:
         ceres::Solve(options, &problem, &summary);
         
         // Debug output
-        if (summary.termination_type != ceres::CONVERGENCE) {
-            RCLCPP_WARN_STREAM(rclcpp::get_logger("SlidingWindowBA"), "BA optimization did not converge: " << summary.BriefReport());
-        } else {
-            RCLCPP_DEBUG_STREAM(rclcpp::get_logger("SlidingWindowBA"), "BA optimization converged: " << summary.BriefReport());
-        }
+        // if (summary.termination_type != ceres::CONVERGENCE) {
+        //     RCLCPP_WARN_STREAM(rclcpp::get_logger("SlidingWindowBA"), "BA optimization did not converge: " << summary.BriefReport());
+        // } else {
+        //     RCLCPP_DEBUG_STREAM(rclcpp::get_logger("SlidingWindowBA"), "BA optimization converged: " << summary.BriefReport());
+        // }
     }
 
     // Get the latest optimized camera pose

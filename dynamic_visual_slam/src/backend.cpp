@@ -40,7 +40,7 @@ public:
         // Parameters
         min_observations_for_landmark_ = 2;
         max_reprojection_error_ = 2.0;
-        bundle_adjustment_frequency_ = 5; // Run BA every 5 keyframes
+        bundle_adjustment_frequency_ = 10; // Run BA every 5 keyframes
         keyframe_count_ = 0;
         
         RCLCPP_INFO(this->get_logger(), "Backend initialized");
@@ -110,7 +110,7 @@ private:
             RCLCPP_INFO(this->get_logger(), "Running bundle adjustment...");
             auto start = std::chrono::high_resolution_clock::now();
             
-            bundle_adjuster_->optimize(50); // 50 iterations
+            bundle_adjuster_->optimize(3); // 50 iterations
             
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
