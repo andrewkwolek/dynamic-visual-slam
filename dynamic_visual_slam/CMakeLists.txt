@@ -27,7 +27,7 @@ include_directories(
   ${CERES_INCLUDE_DIRS}
 )
 
-add_executable(frontend src/feature_detection.cpp)
+add_executable(frontend src/frontend.cpp)
 ament_target_dependencies(frontend 
   rclcpp 
   sensor_msgs 

@@ -20,10 +20,10 @@
 #include "dynamic_visual_slam_interfaces/msg/observation.hpp"
 #include "dynamic_visual_slam_interfaces/msg/landmark.hpp"
 
-class FeatureDetector : public rclcpp::Node
+class Frontend : public rclcpp::Node
 {
 public:
-    FeatureDetector() : Node("feature_detector")
+    Frontend() : Node("frontend")
     {
         rclcpp::QoS qos = rclcpp::QoS(30);
 
@@ -32,11 +32,11 @@ public:
         depth_sub_.subscribe(this, "/camera/camera/aligned_depth_to_color/image_raw", qos.get_rmw_qos_profile());
 
         sync_ = std::make_shared<message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image>>>(message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image>(10), rgb_sub_, depth_sub_);
-        sync_->registerCallback(std::bind(&FeatureDetector::syncCallback, this, std::placeholders::_1, std::placeholders::_2));
+        sync_->registerCallback(std::bind(&Frontend::syncCallback, this, std::placeholders::_1, std::placeholders::_2));
 
         // Create subscriptions
-        rgb_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/color/camera_info", qos, std::bind(&FeatureDetector::rgbInfoCallback, this, std::placeholders::_1));
-        depth_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/aligned_depth_to_color/camera_info", qos, std::bind(&FeatureDetector::depthInfoCallback, this, std::placeholders::_1));
+        rgb_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/color/camera_info", qos, std::bind(&Frontend::rgbInfoCallback, this, std::placeholders::_1));
+        depth_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>("/camera/camera/aligned_depth_to_color/camera_info", qos, std::bind(&Frontend::depthInfoCallback, this, std::placeholders::_1));
 
         // Create publishers
         image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/feature_detector/features_image", qos);
@@ -445,7 +445,7 @@ private:
             R_ = R_ * R_ros;
 
             // Broadcast the transform
-            broadcastTransform(stamp);
+            // broadcastTransform(stamp);
 
             RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
                         
@@ -655,7 +655,7 @@ private:
 
 int main(int argc, char* argv[]) {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<FeatureDetector>());
+    rclcpp::spin(std::make_shared<Frontend>());
     rclcpp::shutdown();
     return 0;
 }
