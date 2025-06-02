@@ -284,6 +284,7 @@ private:
         // Set header
         kf.header.frame_id = "camera_link";
         kf.header.stamp = stamp;
+        kf.frame_id = keyframe_id_++;
 
         for (size_t i = 0; i < current_keypoints.size(); i++) {
             cv::Point2f pt = current_keypoints[i].pt;
@@ -445,7 +446,7 @@ private:
             R_ = R_ * R_ros;
 
             // Broadcast the transform
-            // broadcastTransform(stamp);
+            broadcastTransform(stamp);
 
             RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
                         
