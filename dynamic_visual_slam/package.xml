@@ -21,6 +21,7 @@
   <depend>message_filters</depend>
   <depend>dbow2</depend>
   <depend>ceres</depend>
+  <depend>visualization_msgs</depend>
   <build_depend>dynamic_visual_slam_interfaces</build_depend>
   
   <exec_depend>dynamic_visual_slam_interfaces</exec_depend>
