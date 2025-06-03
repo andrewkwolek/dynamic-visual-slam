@@ -93,7 +93,6 @@ public:
         depth_camera_matrix_ = cv::Mat();
         depth_dist_coeffs_ = cv::Mat();
 
-        // Keyframe initialization
         keyframe_id_ = 0;
         frames_since_last_keyframe_ = 0;
         has_last_keyframe_ = false;
@@ -197,12 +196,9 @@ private:
     }
 
     bool isMotionOutlier(const cv::Mat& R_new, const cv::Mat& t_new) {
-        // Maximum allowed translation between frames (meters)
         const double MAX_TRANSLATION = 0.5;
-        // Maximum allowed rotation between frames (radians)
         const double MAX_ROTATION = 0.2;
         
-        // Check translation magnitude
         double translation_norm = cv::norm(t_new);
         if (translation_norm > MAX_TRANSLATION) {
             RCLCPP_WARN(this->get_logger(), "Translation outlier detected: %f m", translation_norm);
@@ -222,7 +218,6 @@ private:
     }
 
     bool isKeyframe(const cv::Mat& current_descriptors) {
-        // Determines if frame should be a keyframe
         if (!has_last_keyframe_) {
             has_last_keyframe_ = true;
             return true;
@@ -233,7 +228,6 @@ private:
             std::vector<cv::DMatch> keyframe_matches;
             matcher_.match(current_descriptors, last_keyframe_descriptors_, keyframe_matches);
             
-            // Filter matches
             std::vector<cv::DMatch> good_keyframe_matches;
             float max_distance = 50.0f;
             for (const auto& match : keyframe_matches) {
@@ -259,7 +253,6 @@ private:
 
         geometry_msgs::msg::Transform transform;
     
-        // Convert rotation matrix to quaternion
         Eigen::Matrix3d R_eigen;
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
@@ -268,12 +261,10 @@ private:
         }
         Eigen::Quaterniond q(R_eigen);
         
-        // Set translation
         transform.translation.x = t_.at<double>(0);
         transform.translation.y = t_.at<double>(1);
         transform.translation.z = t_.at<double>(2);
         
-        // Set rotation (quaternion)
         transform.rotation.x = q.x();
         transform.rotation.y = q.y();
         transform.rotation.z = q.z();
@@ -281,7 +272,6 @@ private:
 
         kf.pose = transform;
 
-        // Set header
         kf.header.frame_id = "camera_link";
         kf.header.stamp = stamp;
         kf.frame_id = keyframe_id_++;
@@ -293,16 +283,14 @@ private:
             float pt_depth = current_depth_frame.at<uint16_t>(y, x) * 0.001f;
             cv::Point3f pt_3d((pt.x - rgb_cx_) * pt_depth / rgb_fx_, (pt.y - rgb_cy_) *pt_depth / rgb_fy_, pt_depth);
             
-            if (pt_3d.z > 0.3 && pt_3d.z < 3.0) {  // Valid depth range
-                // Create landmark
+            if (pt_3d.z > 0.3 && pt_3d.z < 3.0) {
                 dynamic_visual_slam_interfaces::msg::Landmark landmark;
-                landmark.landmark_id = static_cast<uint64_t>(i);  // Temporary ID (keypoint index)
+                landmark.landmark_id = static_cast<uint64_t>(i);
                 landmark.position.x = pt_3d.x;
                 landmark.position.y = pt_3d.y;
                 landmark.position.z = pt_3d.z;
-                landmark.is_new = true;  // Backend will determine actual novelty
+                landmark.is_new = true;
                 
-                // Create observation
                 dynamic_visual_slam_interfaces::msg::Observation obs;
                 obs.landmark_id = static_cast<uint64_t>(i);
                 obs.pixel_x = current_keypoints[i].pt.x;
@@ -322,7 +310,6 @@ private:
     }
 
     void estimateCameraPose(const std::vector<cv::KeyPoint>& prev_kps, const std::vector<cv::KeyPoint>& curr_kps, const std::vector<cv::DMatch>& good_matches, const cv::Mat& prev_depth, const rclcpp::Time& stamp) {
-        // Build 3D-2D correspondences directly from good_matches
         std::vector<cv::Point3f> points3d;
         std::vector<cv::Point2f> points2d;
 
@@ -332,35 +319,28 @@ private:
         }
 
         try {
-            // Use good_matches to create 3D-2D correspondences
             for (const auto& match : good_matches) {
-                // Get previous and current keypoint coordinates
                 cv::Point2f prev_pt = prev_kps[match.trainIdx].pt;
                 cv::Point2f curr_pt = curr_kps[match.queryIdx].pt;
                 
                 int x_prev = static_cast<int>(std::round(prev_pt.x));
                 int y_prev = static_cast<int>(std::round(prev_pt.y));
                 
-                // Check bounds
                 if (x_prev < 0 || y_prev < 0 || 
                     x_prev >= prev_depth.cols || y_prev >= prev_depth.rows) {
                     continue;
                 }
                 
-                // Get the depth value at the previous point
                 float d_prev = prev_depth.at<uint16_t>(y_prev, x_prev) * 0.001f;
                 
-                // Skip points with invalid depth
                 if (d_prev <= 0.3f || d_prev > 3.0f) {
                     continue;
                 }
                 
-                // Back-project to 3D point using previous frame coordinates
                 cv::Point3f pt3d_prev((prev_pt.x - rgb_cx_) * d_prev / rgb_fx_, 
                                     (prev_pt.y - rgb_cy_) * d_prev / rgb_fy_, 
                                     d_prev);
                 
-                // Use current frame 2D coordinates for PnP
                 points3d.push_back(pt3d_prev);
                 points2d.push_back(curr_pt);
             }
@@ -369,14 +349,12 @@ private:
             return;
         }
 
-        // Need at least 6 matching points for stable PnP
         if (points3d.size() < 6) {
             RCLCPP_WARN(this->get_logger(), "Not enough matching points for pose estimation: %zu", points3d.size());
             return;
         }
 
         try {
-            // Use solvePnPRANSAC for robust estimation
             cv::Mat rvec, tvec;
             std::vector<int> inliers;
             
@@ -395,16 +373,13 @@ private:
                 return;
             }
 
-            // Convert rotation vector to rotation matrix
             cv::Mat R_relative;
             cv::Rodrigues(rvec, R_relative);
             cv::Mat t_relative = tvec.clone();
             
-            // First convert current camera-to-previous transformation to previous-to-current
             cv::Mat R_curr_inv = R_relative.t();
             cv::Mat t_curr_inv = -R_curr_inv * t_relative;
 
-            // Define the transformation matrix from camera optical frame to ROS frame
             cv::Mat T_optical_to_ros = cv::Mat::eye(4, 4, CV_64F);
             
             // For RealSense cameras and standard ROS conventions:
@@ -423,29 +398,24 @@ private:
             T_optical_to_ros.at<double>(2, 1) = -1.0;
             T_optical_to_ros.at<double>(2, 2) = 0.0;
 
-            // Create transformation matrix in optical frame
             cv::Mat T_optical = cv::Mat::eye(4, 4, CV_64F);
             R_curr_inv.copyTo(T_optical(cv::Rect(0, 0, 3, 3)));
             t_curr_inv.copyTo(T_optical(cv::Rect(3, 0, 1, 3)));
             
             // Transform to ROS frame
             cv::Mat T_ros = T_optical_to_ros * T_optical * T_optical_to_ros.inv();
-            
-            // Extract the new rotation and translation in ROS frame
+
             cv::Mat R_ros = T_ros(cv::Rect(0, 0, 3, 3));
             cv::Mat t_ros = T_ros(cv::Rect(3, 0, 1, 3));
-            
-            // Apply motion filtering to the ROS frame motion
+
             if (isMotionOutlier(R_ros, t_ros)) {
                 RCLCPP_WARN(this->get_logger(), "Motion outlier rejected - skipping frame");
                 return;
             }
-            
-            // Update the cumulative pose using the ROS frame transforms
+
             t_ = t_ + R_ * t_ros;
             R_ = R_ * R_ros;
 
-            // Broadcast the transform
             broadcastTransform(stamp);
 
             RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
@@ -496,11 +466,9 @@ private:
         }
     }
     
-    // Callback function for processing incoming images
     void syncCallback(const sensor_msgs::msg::Image::ConstSharedPtr& rgb_msg, const sensor_msgs::msg::Image::ConstSharedPtr& depth_msg)
     {
         try {
-            // Convert ROS image message to OpenCV image
             cv_bridge::CvImagePtr rgb_cv_ptr = cv_bridge::toCvCopy(rgb_msg, "bgr8");
             cv_bridge::CvImagePtr depth_cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_16UC1);
             cv::Mat current_frame_rgb = rgb_cv_ptr->image;
@@ -538,7 +506,6 @@ private:
 
                 RCLCPP_DEBUG(this->get_logger(), "Number of initial matches: %zu", all_matches.size());
 
-                // Optional: Filter by descriptor distance
                 std::vector<cv::DMatch> distance_filtered_matches;
                 float max_distance = 50.0f; 
 
@@ -548,22 +515,18 @@ private:
                     }
                 }
 
-                // Apply RANSAC with fundamental matrix for geometric consistency
                 std::vector<cv::DMatch> geometrically_consistent_matches;
 
                 if (distance_filtered_matches.size() >= 8) {
-                    // Extract point correspondences
                     std::vector<cv::Point2f> prev_pts, curr_pts;
                     for (const auto& match : distance_filtered_matches) {
                         prev_pts.push_back(prev_kps_[match.trainIdx].pt);
                         curr_pts.push_back(current_keypoints[match.queryIdx].pt);
                     }
                     
-                    // Use fundamental matrix RANSAC for outlier detection
                     std::vector<uchar> inliers_mask;
                     cv::Mat fundamental_matrix = cv::findFundamentalMat(prev_pts, curr_pts, inliers_mask, cv::FM_RANSAC, 2.0, 0.99);
-                    
-                    // Extract geometrically consistent matches (these are your "good_matches")
+
                     for (size_t i = 0; i < inliers_mask.size(); i++) {
                         if (inliers_mask[i]) {
                             geometrically_consistent_matches.push_back(distance_filtered_matches[i]);
@@ -577,10 +540,8 @@ private:
                     RCLCPP_WARN(this->get_logger(), "Insufficient matches for RANSAC: %zu", distance_filtered_matches.size());
                 }
 
-                // Now use these inliers for pose estimation
                 std::vector<cv::DMatch> good_matches = geometrically_consistent_matches;
 
-                // Convert to the format your existing pose estimation expects
                 std::vector<cv::Point2f> prev_matched_pts, curr_matched_pts;
                 for (const auto& match : good_matches) {
                     prev_matched_pts.push_back(prev_kps_[match.trainIdx].pt);
@@ -589,15 +550,12 @@ private:
                     cv::circle(vis_image, curr_pt, 3, cv::Scalar(0, 255, 0), 2);
                 }
 
-                // Create status vector (all 1s since these are already filtered inliers)
                 std::vector<uchar> status(good_matches.size(), 1);
 
-                // Call your existing pose estimation function
                 if (good_matches.size() >= 5) {
                     estimateCameraPose(prev_kps_, current_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
                 }
 
-                // ADD PUBLISH TO BACKEND
                 if (isKeyframe(current_descriptors)) {
                     publishKeyframe(current_keypoints, current_descriptors, current_frame_depth, rgb_msg->header.stamp);
                 }
@@ -636,7 +594,6 @@ private:
                 prev_descriptors_ = current_descriptors;
                 prev_kps_ = current_keypoints;
 
-                // Publish camera info if available
                 if (latest_rgb_camera_info_) {
                     auto camera_info = *latest_rgb_camera_info_;
                     camera_info.header = rgb_msg->header;
