@@ -52,7 +52,7 @@ The system consists of two main components:
 1. **Install Dependencies**:
    ```bash
    sudo apt update
-   sudo apt install ros-humble-realsense2-camera
+   sudo apt install ros-jazzy-realsense2-camera
    sudo apt install libceres-dev
    sudo apt install libeigen3-dev
    ```
