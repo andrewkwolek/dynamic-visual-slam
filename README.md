@@ -2,6 +2,8 @@
 
 A real-time visual SLAM (Simultaneous Localization and Mapping) system designed for dynamic environments using ROS 2. This package implements a feature-based monocular visual SLAM pipeline with bundle adjustment optimization for robust camera pose estimation and 3D landmark mapping.
 
+https://github.com/user-attachments/assets/e50d2ff7-a9de-4973-b781-e9fc9a35bd4b
+
 ## Features
 
 - **Real-time Visual Odometry**: ORB feature detection and tracking for camera pose estimation
