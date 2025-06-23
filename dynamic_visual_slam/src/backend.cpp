@@ -113,8 +113,8 @@ private:
             return;
         }
         
-        RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
-                    msg->frame_id, msg->landmarks.size(), all_landmarks_.size());
+        // RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
+        //             msg->frame_id, msg->landmarks.size(), all_landmarks_.size());
 
         latest_keyframe_timestamp_ = msg->header.stamp;
 
