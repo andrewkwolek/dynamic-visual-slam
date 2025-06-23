@@ -2,6 +2,8 @@
 
 A real-time visual SLAM (Simultaneous Localization and Mapping) system designed for dynamic environments using ROS 2. This package implements a feature-based monocular visual SLAM pipeline with bundle adjustment optimization for robust camera pose estimation and 3D landmark mapping.
 
+https://github.com/user-attachments/assets/e50d2ff7-a9de-4973-b781-e9fc9a35bd4b
+
 ## Features
 
 - **Real-time Visual Odometry**: ORB feature detection and tracking for camera pose estimation
@@ -52,7 +54,7 @@ The system consists of two main components:
 1. **Install Dependencies**:
    ```bash
    sudo apt update
-   sudo apt install ros-humble-realsense2-camera
+   sudo apt install ros-jazzy-realsense2-camera
    sudo apt install libceres-dev
    sudo apt install libeigen3-dev
    ```
