@@ -9,6 +9,7 @@
 #include <vector>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <deque>
 #include <iostream>
@@ -43,7 +44,6 @@ struct CameraPose {
         
         Eigen::Quaterniond q(R_eigen);
         
-        // Store in our format (Ceres uses w, x, y, z order)
         rotation[0] = q.w();
         rotation[1] = q.x();
         rotation[2] = q.y();
@@ -108,10 +108,10 @@ struct Observation {
     }
 };
 
-// Reprojection error for bundle adjustment
-struct ReprojectionError {
-    ReprojectionError(double observed_x, double observed_y, double fx, double fy, double cx, double cy)
-        : observed_x(observed_x), observed_y(observed_y), fx(fx), fy(fy), cx(cx), cy(cy) {}
+// Weighted-squared reprojection error with isotropic Gaussian noise and fixed camera intrinsics
+struct WeightedSquaredReprojectionError {
+    WeightedSquaredReprojectionError(double observed_x, double observed_y, double fx, double fy, double cx, double cy, double sigma_pixels)
+        : observed_x(observed_x), observed_y(observed_y), fx(fx), fy(fy), cx(cx), cy(cy), inv_sigma(1.0 / sigma_pixels) {}
 
     template <typename T>
     bool operator()(const T* const camera_rotation, const T* const camera_translation,
@@ -127,38 +127,50 @@ struct ReprojectionError {
         
         // Check for points behind the camera
         if (point_camera[2] <= T(0)) {
-            // Point is behind camera, set a large residual
-            residuals[0] = T(1000.0);
-            residuals[1] = T(1000.0);
+            residuals[0] = T(1000.0) * T(inv_sigma);
+            residuals[1] = T(1000.0) * T(inv_sigma);
             return true;
         }
         
-        // Project to image plane
-        T predicted_x = fx * point_camera[0] / point_camera[2] + cx;
-        T predicted_y = fy * point_camera[1] / point_camera[2] + cy;
+        // Project to image plane using FIXED camera parameters
+        T predicted_x = T(fx) * point_camera[0] / point_camera[2] + T(cx);
+        T predicted_y = T(fy) * point_camera[1] / point_camera[2] + T(cy);
         
-        // Compute reprojection error
-        residuals[0] = predicted_x - T(observed_x);
-        residuals[1] = predicted_y - T(observed_y);
+        // Compute reprojection error: e_reproj = z_j - π(x_j^C, ξ)
+        T error_x = predicted_x - T(observed_x);
+        T error_y = predicted_y - T(observed_y);
+        
+        // Apply isotropic weighting: 1/σ
+        // When Ceres squares these residuals: (1/σ²) * (error_x² + error_y²)
+        // This implements ||z_j - π(x_j^C, ξ)||²_{σI} from the book
+        residuals[0] = T(inv_sigma) * error_x;
+        residuals[1] = T(inv_sigma) * error_y;
         
         return true;
     }
 
     // Factory to create the cost function
-    static ceres::CostFunction* Create(double observed_x, double observed_y, double fx, double fy, double cx, double cy) {
-        return new ceres::AutoDiffCostFunction<ReprojectionError, 2, 4, 3, 3>(
-            new ReprojectionError(observed_x, observed_y, fx, fy, cx, cy));
+    static ceres::CostFunction* Create(double observed_x, double observed_y, double fx, double fy, double cx, double cy, double sigma_pixels) {
+        return new ceres::AutoDiffCostFunction<WeightedSquaredReprojectionError, 2, 4, 3, 3>(
+            new WeightedSquaredReprojectionError(observed_x, observed_y, fx, fy, cx, cy, sigma_pixels));
     }
 
     double observed_x;
     double observed_y;
-    double fx, fy, cx, cy;
+    double fx, fy, cx, cy;  // Fixed camera intrinsics (not optimized)
+    double inv_sigma;       // 1/σ for efficiency (precomputed)
 };
 
 class SlidingWindowBA {
 public:
-    SlidingWindowBA(int window_size, double fx, double fy, double cx, double cy)
-        : fx_(fx), fy_(fy), cx_(cx), cy_(cy), window_size_(window_size), next_landmark_id_(0), next_frame_id_(0) {}
+    SlidingWindowBA(int window_size, double fx, double fy, double cx, double cy, double sigma_pixels = 1.0)
+        : fx_(fx), fy_(fy), cx_(cx), cy_(cy), sigma_pixels_(sigma_pixels),
+          window_size_(window_size), next_landmark_id_(0), next_frame_id_(0) {}
+
+    // Set the noise parameter
+    void setNoiseModel(double sigma_pixels) {
+        sigma_pixels_ = sigma_pixels;
+    }
 
     // Add a new frame to the sliding window
     int addFrame(const cv::Mat& R, const cv::Mat& t) {
@@ -190,7 +202,6 @@ public:
                 }
             }
             
-            // TODO: Remove landmarks that are no longer observed by any frame
             pruneLandmarks();
         }
         
@@ -226,12 +237,12 @@ public:
         observations_.emplace_back(x, y, landmark_id, frame_id);
     }
 
-    // Run bundle adjustment on the current sliding window using Levenberg-Marquardt
+    // Run robust bundle adjustment with weighted-squared reprojection error + Huber loss
     void optimize(int num_iterations) {
         // Create the Ceres problem
         ceres::Problem problem;
         
-        // Set up camera parameter blocks
+        // Set up camera parameter blocks (only poses, intrinsics are fixed)
         for (const auto& frame_pair : frame_poses_) {
             int frame_id = frame_pair.first;
             const auto& pose = frame_pair.second;
@@ -239,76 +250,84 @@ public:
             problem.AddParameterBlock(pose->rotation, 4);
             problem.AddParameterBlock(pose->translation, 3);
             
-            // Fix the first camera pose (gauge freedom)
+            // Fix the first camera pose for gauge freedom
             if (frame_id == frame_queue_.front()) {
                 problem.SetParameterBlockConstant(pose->rotation);
                 problem.SetParameterBlockConstant(pose->translation);
             }
             
-            // Add a constraint to keep the quaternion normalized
+            // Add quaternion normalization constraint
             problem.SetManifold(pose->rotation, new ceres::EigenQuaternionManifold);
         }
         
-        // Add residual blocks for each observation
+        // Add landmark parameter blocks
+        for (const auto& landmark_pair : landmarks_) {
+            const auto& landmark = landmark_pair.second;
+            
+            problem.AddParameterBlock(landmark->position, 3);
+            
+            // Fix landmarks if specified
+            if (landmark->fixed) {
+                problem.SetParameterBlockConstant(landmark->position);
+            }
+        }
+        
+        // Add residual blocks with weighted-squared reprojection error + Huber loss
         for (const auto& obs : observations_) {
             auto frame_it = frame_poses_.find(obs.frame_id);
             auto landmark_it = landmarks_.find(obs.landmark_id);
             
             if (frame_it != frame_poses_.end() && landmark_it != landmarks_.end()) {
-                // Create and add the reprojection error
-                ceres::CostFunction* cost_function = ReprojectionError::Create(
-                    obs.pixel[0], obs.pixel[1], fx_, fy_, cx_, cy_
+                // Create weighted-squared reprojection error with FIXED intrinsics
+                ceres::CostFunction* cost_function = WeightedSquaredReprojectionError::Create(
+                    obs.pixel[0], obs.pixel[1], fx_, fy_, cx_, cy_, sigma_pixels_
                 );
                 
                 problem.AddResidualBlock(
                     cost_function,
-                    new ceres::HuberLoss(1.0), // Robust loss function
-                    frame_it->second->rotation,
-                    frame_it->second->translation,
-                    landmark_it->second->position
+                    new ceres::HuberLoss(1.345),      // Standard Huber threshold for outlier rejection
+                    frame_it->second->rotation,       // Optimize: camera rotation
+                    frame_it->second->translation,    // Optimize: camera translation  
+                    landmark_it->second->position     // Optimize: 3D landmark position
                 );
-                
-                // Fix landmarks if specified
-                if (landmark_it->second->fixed) {
-                    problem.SetParameterBlockConstant(landmark_it->second->position);
-                }
+                // Note: Camera intrinsics (fx_, fy_, cx_, cy_) are fixed constants
             }
         }
         
-        // Set solver options specifically for Levenberg-Marquardt
+        // Solver options optimized for bundle adjustment
         ceres::Solver::Options options;
         
-        // Explicitly use Levenberg-Marquardt
+        // Use Levenberg-Marquardt for robust convergence
         options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+        options.initial_trust_region_radius = 1e4;
+        options.max_trust_region_radius = 1e8;
+        options.min_trust_region_radius = 1e-32;
         
-        // Tune Levenberg-Marquardt parameters
-        options.initial_trust_region_radius = 1e4;  // Initial damping factor
-        options.max_trust_region_radius = 1e8;      // Maximum damping
-        options.min_trust_region_radius = 1e-32;    // Minimum damping
-        
-        // Performance options
-        options.linear_solver_type = ceres::SPARSE_SCHUR;  // Best for BA problems
-        options.num_threads = 4;                           // Parallel processing
-        options.max_num_iterations = num_iterations;       // Max iterations
+        // SPARSE_SCHUR is optimal for bundle adjustment structure
+        options.linear_solver_type = ceres::SPARSE_SCHUR;
+        options.num_threads = 4;
+        options.max_num_iterations = num_iterations;
         
         // Convergence criteria
-        options.function_tolerance = 1e-6;        // Stop when cost change is small
-        options.gradient_tolerance = 1e-10;       // Stop when gradient is small
-        options.parameter_tolerance = 1e-8;       // Stop when parameter change is small
+        options.function_tolerance = 1e-6;
+        options.gradient_tolerance = 1e-10;
+        options.parameter_tolerance = 1e-8;
         
-        // Progress reporting
         options.minimizer_progress_to_stdout = false;
         
         // Run the solver
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
         
-        // Debug output
-        // if (summary.termination_type != ceres::CONVERGENCE) {
-        //     RCLCPP_WARN_STREAM(rclcpp::get_logger("SlidingWindowBA"), "BA optimization did not converge: " << summary.BriefReport());
-        // } else {
-        //     RCLCPP_DEBUG_STREAM(rclcpp::get_logger("SlidingWindowBA"), "BA optimization converged: " << summary.BriefReport());
-        // }
+        // Optional: Log optimization results
+        if (summary.termination_type == ceres::CONVERGENCE) {
+            RCLCPP_DEBUG(rclcpp::get_logger("SlidingWindowBA"), 
+                        "BA converged: %d iterations, final cost: %e", 
+                        summary.num_successful_steps, summary.final_cost);
+        } else {
+            RCLCPP_WARN(rclcpp::get_logger("SlidingWindowBA"), 
+                       "BA did not converge: %s", summary.BriefReport().c_str());
+        }
     }
 
     // Get the latest optimized camera pose
@@ -361,8 +380,9 @@ private:
         }
     }
 
-    // Camera parameters
+    // Camera parameters (fixed - not optimized)
     double fx_, fy_, cx_, cy_;
+    double sigma_pixels_;  // Isotropic Gaussian noise standard deviation
     
     // Sliding window parameters
     int window_size_;
@@ -378,4 +398,4 @@ private:
     int next_frame_id_;
 };
 
-#endif // BUNDLE_ADJUSTMENT_H
+#endif // BUNDLE_ADJUSTMENT_HPP

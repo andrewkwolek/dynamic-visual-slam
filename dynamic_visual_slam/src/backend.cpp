@@ -22,7 +22,7 @@ public:
 
         // Initialize bundle adjuster with default camera parameters
         // These will be updated when we receive camera info
-        bundle_adjuster_ = std::make_unique<SlidingWindowBA>(10, 640.0, 480.0, 320.0, 240.0);
+        bundle_adjuster_ = std::make_unique<SlidingWindowBA>(10, fx_, fy_, cx_, cy_, 0.5);
         
         // Track global landmark IDs
         next_global_landmark_id_ = 0;
