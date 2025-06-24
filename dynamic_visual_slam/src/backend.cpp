@@ -42,8 +42,6 @@ public:
         // Create marker publishers for landmark visualization
         landmark_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/backend/landmark_markers", qos);
-
-        timer_ = this->create_wall_timer(std::chrono::milliseconds(300), std::bind(&Backend::timer_callback, this));
             
         // Parameters
         min_observations_for_landmark_ = 2;
@@ -84,9 +82,6 @@ private:
     std::unordered_map<uint64_t, int> landmark_observation_count_;
     std::unordered_map<uint64_t, rclcpp::Time> landmark_first_seen_;
     std::vector<geometry_msgs::msg::Pose> keyframe_poses_;
-
-    // Timer callback
-    rclcpp::TimerBase::SharedPtr timer_;
     
     // Map management
     bool map_cleared_;
@@ -96,24 +91,6 @@ private:
     double max_reprojection_error_;
     int bundle_adjustment_frequency_;
     int keyframe_count_;
-
-    void timer_callback() {
-        RCLCPP_INFO(this->get_logger(), "Running bundle adjustment...");
-        auto start = std::chrono::high_resolution_clock::now();
-        
-        bundle_adjuster_->optimize(3);
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        
-        RCLCPP_INFO(this->get_logger(), "Bundle adjustment completed in %ld ms", duration.count());
-        
-        broadcastOptimizedTransform();
-        logOptimizedPose();
-        
-        // Republish landmarks after optimization (positions may have been refined)
-        publishAllLandmarkMarkers();
-    }
 
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         if (!camera_params_initialized_) {
@@ -158,6 +135,24 @@ private:
         publishAllLandmarkMarkers();
         
         keyframe_count_++;
+
+        if (keyframe_count_ > 10) {
+            RCLCPP_INFO(this->get_logger(), "Running bundle adjustment...");
+            auto start = std::chrono::high_resolution_clock::now();
+            
+            bundle_adjuster_->optimize(3);
+            
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+            
+            RCLCPP_INFO(this->get_logger(), "Bundle adjustment completed in %ld ms", duration.count());
+            
+            broadcastOptimizedTransform();
+            logOptimizedPose();
+            
+            // Republish landmarks after optimization (positions may have been refined)
+            publishAllLandmarkMarkers();
+        }
     }
     
     void extractPoseFromTransform(const geometry_msgs::msg::Transform& transform, cv::Mat& R, cv::Mat& t) {

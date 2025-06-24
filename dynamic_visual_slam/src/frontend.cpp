@@ -239,7 +239,8 @@ private:
             tracking_criterion = (good_keyframe_matches.size() < 50);
         }
 
-        if (frames_since_last_keyframe_ > 10 || tracking_criterion) {
+        if (frames_since_last_keyframe_ > 30 || tracking_criterion) {
+            RCLCPP_INFO(this->get_logger(), "Found keyframe!");
             frames_since_last_keyframe_ = 0;
             return true;
         }
@@ -416,7 +417,7 @@ private:
             t_ = t_ + R_ * t_ros;
             R_ = R_ * R_ros;
 
-            broadcastTransform(stamp);
+            // broadcastTransform(stamp);
 
             RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
                         
