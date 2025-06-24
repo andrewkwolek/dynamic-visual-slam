@@ -116,6 +116,8 @@ private:
         // RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
         //             msg->frame_id, msg->landmarks.size(), all_landmarks_.size());
 
+        keyframe_count_++;
+
         latest_keyframe_timestamp_ = msg->header.stamp;
 
         cv::Mat R, t;
@@ -131,28 +133,22 @@ private:
         int frame_id = bundle_adjuster_->addFrame(R, t);
         
         processLandmarksAndObservations(msg, frame_id, R, t);
-        
-        publishAllLandmarkMarkers();
-        
-        keyframe_count_++;
 
-        if (keyframe_count_ > 10) {
-            RCLCPP_INFO(this->get_logger(), "Running bundle adjustment...");
-            auto start = std::chrono::high_resolution_clock::now();
-            
-            bundle_adjuster_->optimize(3);
-            
-            auto end = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-            
-            RCLCPP_INFO(this->get_logger(), "Bundle adjustment completed in %ld ms", duration.count());
-            
-            broadcastOptimizedTransform();
-            logOptimizedPose();
-            
-            // Republish landmarks after optimization (positions may have been refined)
-            publishAllLandmarkMarkers();
-        }
+        RCLCPP_INFO(this->get_logger(), "Running bundle adjustment...");
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        bundle_adjuster_->optimize(3);
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        
+        RCLCPP_INFO(this->get_logger(), "Bundle adjustment completed in %ld ms", duration.count());
+        
+        broadcastOptimizedTransform();
+        logOptimizedPose();
+        
+        // Republish landmarks after optimization (positions may have been refined)
+        publishAllLandmarkMarkers();
     }
     
     void extractPoseFromTransform(const geometry_msgs::msg::Transform& transform, cv::Mat& R, cv::Mat& t) {

@@ -239,7 +239,7 @@ private:
             tracking_criterion = (good_keyframe_matches.size() < 50);
         }
 
-        if (frames_since_last_keyframe_ > 30 || tracking_criterion) {
+        if (frames_since_last_keyframe_ > 30) {
             RCLCPP_INFO(this->get_logger(), "Found keyframe!");
             frames_since_last_keyframe_ = 0;
             return true;
