@@ -416,7 +416,7 @@ private:
             t_ = t_ + R_ * t_ros;
             R_ = R_ * R_ros;
 
-            // broadcastTransform(stamp);
+            broadcastTransform(stamp);
 
             RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
                         

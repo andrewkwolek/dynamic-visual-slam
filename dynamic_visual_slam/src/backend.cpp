@@ -1,9 +1,6 @@
 #include <opencv2/opencv.hpp>
 #include <memory>
 #include <unordered_map>
-#include <queue>
-#include <mutex>
-#include <atomic>
 
 #include "rclcpp/rclcpp.hpp"
 #include "dynamic_visual_slam/bundle_adjustment.hpp"
@@ -45,6 +42,8 @@ public:
         // Create marker publishers for landmark visualization
         landmark_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/backend/landmark_markers", qos);
+
+        timer_ = this->create_wall_timer(std::chrono::milliseconds(300), std::bind(&Backend::timer_callback, this));
             
         // Parameters
         min_observations_for_landmark_ = 2;
@@ -56,16 +55,7 @@ public:
         // Initialize landmark map clearing flag
         map_cleared_ = false;
         
-        // Bundle adjustment state
-        ba_running_ = false;
-        keyframes_since_last_ba_ = 0;
-        
-        // Create timer for bundle adjustment (runs at 2 Hz)
-        ba_timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(500),  // 2 Hz
-            std::bind(&Backend::bundleAdjustmentTimerCallback, this));
-        
-        RCLCPP_INFO(this->get_logger(), "Backend initialized with asynchronous bundle adjustment");
+        RCLCPP_INFO(this->get_logger(), "Backend initialized - keeping all landmarks for mapping");
     }
 
 private:
@@ -77,9 +67,6 @@ private:
     // Publishers
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr landmark_markers_pub_;
-    
-    // Timer for bundle adjustment
-    rclcpp::TimerBase::SharedPtr ba_timer_;
     
     // Store latest timestamp for TF broadcasting
     rclcpp::Time latest_keyframe_timestamp_;
@@ -97,6 +84,9 @@ private:
     std::unordered_map<uint64_t, int> landmark_observation_count_;
     std::unordered_map<uint64_t, rclcpp::Time> landmark_first_seen_;
     std::vector<geometry_msgs::msg::Pose> keyframe_poses_;
+
+    // Timer callback
+    rclcpp::TimerBase::SharedPtr timer_;
     
     // Map management
     bool map_cleared_;
@@ -106,15 +96,24 @@ private:
     double max_reprojection_error_;
     int bundle_adjustment_frequency_;
     int keyframe_count_;
-    
-    // Bundle adjustment state management
-    std::atomic<bool> ba_running_;
-    std::atomic<int> keyframes_since_last_ba_;
-    std::mutex ba_mutex_;  // Protects bundle_adjuster_ during optimization
-    
-    // Queue for pending keyframes during BA
-    std::queue<dynamic_visual_slam_interfaces::msg::Keyframe::ConstSharedPtr> pending_keyframes_;
-    std::mutex pending_keyframes_mutex_;
+
+    void timer_callback() {
+        RCLCPP_INFO(this->get_logger(), "Running bundle adjustment...");
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        bundle_adjuster_->optimize(3);
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        
+        RCLCPP_INFO(this->get_logger(), "Bundle adjustment completed in %ld ms", duration.count());
+        
+        broadcastOptimizedTransform();
+        logOptimizedPose();
+        
+        // Republish landmarks after optimization (positions may have been refined)
+        publishAllLandmarkMarkers();
+    }
 
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         if (!camera_params_initialized_) {
@@ -137,21 +136,8 @@ private:
             return;
         }
         
-        // If bundle adjustment is running, queue the keyframe for later processing
-        if (ba_running_.load()) {
-            std::lock_guard<std::mutex> lock(pending_keyframes_mutex_);
-            pending_keyframes_.push(msg);
-            RCLCPP_DEBUG(this->get_logger(), "BA running, queued keyframe %lu (queue size: %zu)", 
-                        msg->frame_id, pending_keyframes_.size());
-            return;
-        }
-        
-        processKeyframe(msg);
-    }
-    
-    void processKeyframe(const dynamic_visual_slam_interfaces::msg::Keyframe::ConstSharedPtr& msg) {
-        RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
-                    msg->frame_id, msg->landmarks.size(), all_landmarks_.size());
+        // RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
+        //             msg->frame_id, msg->landmarks.size(), all_landmarks_.size());
 
         latest_keyframe_timestamp_ = msg->header.stamp;
 
@@ -165,75 +151,13 @@ private:
         keyframe_pose.orientation = msg->pose.rotation;
         keyframe_poses_.push_back(keyframe_pose);
         
-        // Thread-safe access to bundle adjuster
-        int frame_id;
-        {
-            std::lock_guard<std::mutex> lock(ba_mutex_);
-            frame_id = bundle_adjuster_->addFrame(R, t);
-            processLandmarksAndObservations(msg, frame_id, R, t);
-        }
+        int frame_id = bundle_adjuster_->addFrame(R, t);
+        
+        processLandmarksAndObservations(msg, frame_id, R, t);
         
         publishAllLandmarkMarkers();
         
-        // Increment counter for BA triggering
-        keyframes_since_last_ba_++;
-        
-        RCLCPP_DEBUG(this->get_logger(), "Processed keyframe %lu, keyframes since last BA: %d", 
-                    msg->frame_id, keyframes_since_last_ba_.load());
-    }
-    
-    void bundleAdjustmentTimerCallback() {
-        // Check if we should run bundle adjustment
-        if (ba_running_.load() || 
-            keyframes_since_last_ba_.load() < bundle_adjustment_frequency_ ||
-            !camera_params_initialized_) {
-            return;
-        }
-        
-        // Set the BA running flag
-        ba_running_.store(true);
-        keyframes_since_last_ba_.store(0);
-        
-        RCLCPP_INFO(this->get_logger(), "Starting bundle adjustment...");
-        auto start = std::chrono::high_resolution_clock::now();
-        
-        // Run bundle adjustment with mutex protection
-        {
-            std::lock_guard<std::mutex> lock(ba_mutex_);
-            bundle_adjuster_->optimize(5);  // Use more iterations since we run less frequently
-        }
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        
-        RCLCPP_INFO(this->get_logger(), "Bundle adjustment completed in %ld ms", duration.count());
-        
-        // Broadcast optimized transform and update visualization
-        broadcastOptimizedTransform();
-        logOptimizedPose();
-        publishAllLandmarkMarkers();
-        
-        // Process any queued keyframes
-        processQueuedKeyframes();
-        
-        // Clear the BA running flag
-        ba_running_.store(false);
-    }
-    
-    void processQueuedKeyframes() {
-        std::lock_guard<std::mutex> lock(pending_keyframes_mutex_);
-        
-        if (!pending_keyframes_.empty()) {
-            RCLCPP_INFO(this->get_logger(), "Processing %zu queued keyframes", pending_keyframes_.size());
-        }
-        
-        while (!pending_keyframes_.empty()) {
-            auto keyframe = pending_keyframes_.front();
-            pending_keyframes_.pop();
-            
-            // Process the queued keyframe
-            processKeyframe(keyframe);
-        }
+        keyframe_count_++;
     }
     
     void extractPoseFromTransform(const geometry_msgs::msg::Transform& transform, cv::Mat& R, cv::Mat& t) {
