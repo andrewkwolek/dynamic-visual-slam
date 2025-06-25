@@ -116,33 +116,25 @@ struct WeightedSquaredReprojectionError {
     template <typename T>
     bool operator()(const T* const camera_rotation, const T* const camera_translation,
                     const T* const point, T* residuals) const {
-        // Apply camera rotation to the point
         T point_camera[3];
         ceres::QuaternionRotatePoint(camera_rotation, point, point_camera);
         
-        // Apply camera translation
         point_camera[0] += camera_translation[0];
         point_camera[1] += camera_translation[1];
         point_camera[2] += camera_translation[2];
         
-        // Check for points behind the camera
         if (point_camera[2] <= T(0)) {
             residuals[0] = T(1000.0) * T(inv_sigma);
             residuals[1] = T(1000.0) * T(inv_sigma);
             return true;
         }
         
-        // Project to image plane using FIXED camera parameters
         T predicted_x = T(fx) * point_camera[0] / point_camera[2] + T(cx);
         T predicted_y = T(fy) * point_camera[1] / point_camera[2] + T(cy);
         
-        // Compute reprojection error: e_reproj = z_j - π(x_j^C, ξ)
         T error_x = predicted_x - T(observed_x);
         T error_y = predicted_y - T(observed_y);
         
-        // Apply isotropic weighting: 1/σ
-        // When Ceres squares these residuals: (1/σ²) * (error_x² + error_y²)
-        // This implements ||z_j - π(x_j^C, ξ)||²_{σI} from the book
         residuals[0] = T(inv_sigma) * error_x;
         residuals[1] = T(inv_sigma) * error_y;
         
