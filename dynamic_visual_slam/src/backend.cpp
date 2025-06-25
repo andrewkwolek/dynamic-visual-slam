@@ -22,7 +22,7 @@ public:
 
         // Initialize bundle adjuster with default camera parameters
         // These will be updated when we receive camera info
-        bundle_adjuster_ = std::make_unique<SlidingWindowBA>(10, fx_, fy_, cx_, cy_, 0.5);
+        bundle_adjuster_ = std::make_unique<SlidingWindowBA>(10, 640.0, 480.0, 320.0, 240.0);
         
         // Track global landmark IDs
         next_global_landmark_id_ = 0;
@@ -116,8 +116,6 @@ private:
         // RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
         //             msg->frame_id, msg->landmarks.size(), all_landmarks_.size());
 
-        keyframe_count_++;
-
         latest_keyframe_timestamp_ = msg->header.stamp;
 
         cv::Mat R, t;
@@ -133,7 +131,9 @@ private:
         int frame_id = bundle_adjuster_->addFrame(R, t);
         
         processLandmarksAndObservations(msg, frame_id, R, t);
-
+        
+        
+        keyframe_count_++;
         RCLCPP_INFO(this->get_logger(), "Running bundle adjustment...");
         auto start = std::chrono::high_resolution_clock::now();
         
