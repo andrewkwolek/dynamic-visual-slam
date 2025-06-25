@@ -24,9 +24,6 @@ public:
         // These will be updated when we receive camera info
         bundle_adjuster_ = std::make_unique<SlidingWindowBA>(10, 640.0, 480.0, 320.0, 240.0);
         
-        // Track global landmark IDs
-        next_global_landmark_id_ = 0;
-        
         keyframe_sub_ = this->create_subscription<dynamic_visual_slam_interfaces::msg::Keyframe>(
             "/frontend/keyframe", qos, 
             std::bind(&Backend::keyframeCallback, this, std::placeholders::_1));
@@ -44,6 +41,10 @@ public:
             "/backend/landmark_markers", qos);
             
         // Parameters
+        min_observations_for_landmark_ = 2;
+        max_reprojection_error_ = 2.0;
+        bundle_adjustment_frequency_ = 10; // Run BA every 10 keyframes
+        keyframe_count_ = 0;
         camera_params_initialized_ = false;
         
         // Initialize landmark map clearing flag
@@ -69,11 +70,22 @@ private:
     bool camera_params_initialized_;
     double fx_, fy_, cx_, cy_;
     
-    int next_global_landmark_id_;
+    // Persistent landmark storage for mapping
+    std::unordered_map<uint64_t, geometry_msgs::msg::Point> all_landmarks_;
+    std::unordered_map<uint64_t, int> landmark_observation_count_;
+    std::unordered_map<uint64_t, rclcpp::Time> landmark_first_seen_;
+    std::vector<geometry_msgs::msg::Pose> keyframe_poses_;
+    std::vector<cv::Mat> keyframe_descriptors_;
+
     
     // Map management
     bool map_cleared_;
     
+    // Parameters
+    int min_observations_for_landmark_;
+    double max_reprojection_error_;
+    int bundle_adjustment_frequency_;
+    int keyframe_count_;
 
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         if (!camera_params_initialized_) {
@@ -96,7 +108,26 @@ private:
             return;
         }
         
-        
+        RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
+                    msg->frame_id, msg->landmarks.size(), all_landmarks_.size());
+
+        latest_keyframe_timestamp_ = msg->header.stamp;
+
+        cv::Mat R, t;
+        extractPoseFromTransform(msg->pose, R, t);
+
+        geometry_msgs::msg::Pose keyframe_pose;
+        keyframe_pose.position.x = msg->pose.translation.x;
+        keyframe_pose.position.y = msg->pose.translation.y;
+        keyframe_pose.position.z = msg->pose.translation.z;
+        keyframe_pose.orientation = msg->pose.rotation;
+        keyframe_poses_.push_back(keyframe_pose);
+
+        keyframe_descriptors_.push_back(cv::Mat(msg->descriptor_rows, msg->descriptor_cols, CV_8U, const_cast<uint8_t*>(msg->descriptors.data())).clone());
+
+        int frame_id = msg->frame_id;
+
+        // Need to organize observations and landmarks
     }
     
     void extractPoseFromTransform(const geometry_msgs::msg::Transform& transform, cv::Mat& R, cv::Mat& t) {
@@ -127,8 +158,6 @@ private:
         R.at<double>(2, 1) = 2*(qy*qz + qw*qx);
         R.at<double>(2, 2) = 1 - 2*(qx*qx + qy*qy);
     }
-    
-    
     
     void publishAllLandmarkMarkers() {
         visualization_msgs::msg::MarkerArray marker_array;

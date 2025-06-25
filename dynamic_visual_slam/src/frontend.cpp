@@ -305,6 +305,10 @@ private:
         last_keyframe_keypoints_ = current_keypoints;
         last_keyframe_descriptors_ = current_descriptors.clone();
 
+        kf.descriptors.assign(current_descriptors.data, current_descriptors.data + current_descriptors.total());
+        kf.descriptor_rows = current_descriptors.rows;
+        kf.descriptor_cols = current_descriptors.cols;
+
         keyframe_pub_->publish(kf);
     }
 
@@ -555,9 +559,9 @@ private:
                     estimateCameraPose(prev_kps_, current_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
                 }
 
-                // if (isKeyframe(current_descriptors)) {
-                //     publishKeyframe(current_keypoints, current_descriptors, current_frame_depth, rgb_msg->header.stamp);
-                // }
+                if (isKeyframe(current_descriptors)) {
+                    publishKeyframe(current_keypoints, current_descriptors, current_frame_depth, rgb_msg->header.stamp);
+                }
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
