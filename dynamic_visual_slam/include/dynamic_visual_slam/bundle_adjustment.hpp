@@ -9,10 +9,9 @@
 #include <vector>
 #include <map>
 #include <unordered_map>
-#include <unordered_set>
 #include <memory>
-#include <deque>
-#include <iostream>
+#include <chrono>
+#include <functional>
 
 #include "rclcpp/rclcpp.hpp"
 
@@ -22,7 +21,6 @@ struct CameraPose {
     double translation[3]; // Translation vector (x, y, z)
 
     CameraPose() {
-        // Initialize with identity rotation and zero translation
         rotation[0] = 1.0; // w
         rotation[1] = 0.0; // x
         rotation[2] = 0.0; // y
@@ -32,9 +30,7 @@ struct CameraPose {
         translation[2] = 0.0;
     }
 
-    // Convert from OpenCV/Eigen to internal format
     void fromRt(const cv::Mat& R, const cv::Mat& t) {
-        // Convert rotation matrix to quaternion
         Eigen::Matrix3d R_eigen;
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
@@ -43,25 +39,20 @@ struct CameraPose {
         }
         
         Eigen::Quaterniond q(R_eigen);
-        
         rotation[0] = q.w();
         rotation[1] = q.x();
         rotation[2] = q.y();
         rotation[3] = q.z();
         
-        // Store translation
         translation[0] = t.at<double>(0);
         translation[1] = t.at<double>(1);
         translation[2] = t.at<double>(2);
     }
 
-    // Convert to OpenCV format
     void toRt(cv::Mat& R, cv::Mat& t) const {
-        // Convert quaternion to rotation matrix
         Eigen::Quaterniond q(rotation[0], rotation[1], rotation[2], rotation[3]);
         Eigen::Matrix3d R_eigen = q.toRotationMatrix();
         
-        // Convert to cv::Mat
         R = cv::Mat(3, 3, CV_64F);
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
@@ -69,7 +60,6 @@ struct CameraPose {
             }
         }
         
-        // Convert translation
         t = cv::Mat(3, 1, CV_64F);
         t.at<double>(0) = translation[0];
         t.at<double>(1) = translation[1];
@@ -79,36 +69,62 @@ struct CameraPose {
 
 // Structure to store a 3D landmark point
 struct Landmark {
-    double position[3];  // 3D position (x, y, z)
-    bool fixed;          // Whether this point should be optimized or not
+    uint64_t id;
+    double position[3];
+    bool fixed;
 
-    Landmark() : fixed(false) {
+    Landmark() : id(0), fixed(false) {
         position[0] = 0.0;
         position[1] = 0.0;
         position[2] = 0.0;
     }
 
-    Landmark(double x, double y, double z, bool fixed_point = false) : fixed(fixed_point) {
+    Landmark(uint64_t landmark_id, double x, double y, double z, bool fixed_point = false) 
+        : id(landmark_id), fixed(fixed_point) {
         position[0] = x;
         position[1] = y;
         position[2] = z;
     }
 };
 
-// Structure to store a 2D observation of a 3D landmark
+// Structure to store a 2D observation
 struct Observation {
-    double pixel[2];     // 2D pixel coordinates (x, y)
-    int landmark_id;     // ID of the observed landmark
-    int frame_id;        // ID of the frame where the observation was made
+    double pixel[2];
+    uint64_t landmark_id;
+    int frame_id;
 
-    Observation(double x, double y, int landmark, int frame) 
+    Observation(double x, double y, uint64_t landmark, int frame) 
         : landmark_id(landmark), frame_id(frame) {
         pixel[0] = x;
         pixel[1] = y;
     }
 };
 
-// Weighted-squared reprojection error with isotropic Gaussian noise and fixed camera intrinsics
+// Structure to hold keyframe data
+struct KeyframeData {
+    int frame_id;
+    cv::Mat R;
+    cv::Mat t;
+    rclcpp::Time timestamp;
+
+    KeyframeData(int id, const cv::Mat& rotation, const cv::Mat& translation, const rclcpp::Time& stamp)
+        : frame_id(id), R(rotation.clone()), t(translation.clone()), timestamp(stamp) {}
+};
+
+// Result structure for optimization
+struct OptimizationResult {
+    bool success;
+    double final_cost;
+    int iterations_completed;
+    int frames_optimized;
+    int landmarks_optimized;
+    std::string message;
+    std::chrono::milliseconds optimization_time;
+    std::map<int, std::pair<cv::Mat, cv::Mat>> optimized_poses;
+    std::map<uint64_t, cv::Point3d> optimized_landmarks;
+};
+
+// Reprojection error cost function
 struct WeightedSquaredReprojectionError {
     WeightedSquaredReprojectionError(double observed_x, double observed_y, double fx, double fy, double cx, double cy, double sigma_pixels)
         : observed_x(observed_x), observed_y(observed_y), fx(fx), fy(fy), cx(cx), cy(cy), inv_sigma(1.0 / sigma_pixels) {}
@@ -141,253 +157,159 @@ struct WeightedSquaredReprojectionError {
         return true;
     }
 
-    // Factory to create the cost function
     static ceres::CostFunction* Create(double observed_x, double observed_y, double fx, double fy, double cx, double cy, double sigma_pixels) {
         return new ceres::AutoDiffCostFunction<WeightedSquaredReprojectionError, 2, 4, 3, 3>(
             new WeightedSquaredReprojectionError(observed_x, observed_y, fx, fy, cx, cy, sigma_pixels));
     }
 
-    double observed_x;
-    double observed_y;
-    double fx, fy, cx, cy;  // Fixed camera intrinsics (not optimized)
-    double inv_sigma;       // 1/σ for efficiency (precomputed)
+    double observed_x, observed_y;
+    double fx, fy, cx, cy;
+    double inv_sigma;
 };
 
 class SlidingWindowBA {
 public:
-    SlidingWindowBA(int window_size, double fx, double fy, double cx, double cy, double sigma_pixels = 1.0)
-        : fx_(fx), fy_(fy), cx_(cx), cy_(cy), sigma_pixels_(sigma_pixels),
-          window_size_(window_size), next_landmark_id_(0), next_frame_id_(0) {}
+    SlidingWindowBA(double fx, double fy, double cx, double cy, double sigma_pixels = 1.0)
+        : fx_(fx), fy_(fy), cx_(cx), cy_(cy), sigma_pixels_(sigma_pixels) {}
 
-    // Set the noise parameter
-    void setNoiseModel(double sigma_pixels) {
-        sigma_pixels_ = sigma_pixels;
-    }
-
-    // Add a new frame to the sliding window
-    int addFrame(const cv::Mat& R, const cv::Mat& t) {
-        int frame_id = next_frame_id_++;
+    OptimizationResult optimize(const std::vector<KeyframeData>& keyframes, const std::vector<Landmark>& landmarks, const std::vector<Observation>& observations, int max_iterations = 10) {
+        auto start_time = std::chrono::high_resolution_clock::now();
         
-        // Create camera pose
-        auto pose = std::make_shared<CameraPose>();
-        pose->fromRt(R, t);
-        frame_poses_[frame_id] = pose;
+        OptimizationResult result;
+        result.success = false;
+        result.frames_optimized = keyframes.size();
+        result.landmarks_optimized = landmarks.size();
         
-        // Add to frame queue
-        frame_queue_.push_back(frame_id);
+        if (keyframes.empty() || landmarks.empty() || observations.empty()) {
+            result.message = "Empty input data";
+            result.optimization_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() - start_time);
+            return result;
+        }
         
-        // Remove old frames if we exceed the window size
-        if (frame_queue_.size() > static_cast<size_t>(window_size_)) {
-            int old_frame_id = frame_queue_.front();
-            frame_queue_.pop_front();
+        try {
+            std::map<int, std::shared_ptr<CameraPose>> frame_poses;
+            std::map<uint64_t, std::shared_ptr<Landmark>> landmark_map;
             
-            // Remove the old frame's pose
-            frame_poses_.erase(old_frame_id);
+            ceres::Problem problem;
             
-            // Remove observations for this frame
-            auto it = observations_.begin();
-            while (it != observations_.end()) {
-                if (it->frame_id == old_frame_id) {
-                    it = observations_.erase(it);
-                } else {
-                    ++it;
+            // Set up camera poses
+            for (const auto& kf : keyframes) {
+                auto pose = std::make_shared<CameraPose>();
+                pose->fromRt(kf.R, kf.t);
+                frame_poses[kf.frame_id] = pose;
+                
+                problem.AddParameterBlock(pose->rotation, 4);
+                problem.AddParameterBlock(pose->translation, 3);
+                problem.SetManifold(pose->rotation, new ceres::EigenQuaternionManifold);
+            }
+            
+            // Fix first camera pose
+            if (!keyframes.empty()) {
+                auto first_pose = frame_poses[keyframes[0].frame_id];
+                problem.SetParameterBlockConstant(first_pose->rotation);
+                problem.SetParameterBlockConstant(first_pose->translation);
+            }
+            
+            // Set up landmarks
+            for (const auto& landmark : landmarks) {
+                auto lm = std::make_shared<Landmark>(landmark);
+                landmark_map[landmark.id] = lm;
+                
+                problem.AddParameterBlock(lm->position, 3);
+                
+                if (lm->fixed) {
+                    problem.SetParameterBlockConstant(lm->position);
                 }
             }
             
-            pruneLandmarks();
-        }
-        
-        return frame_id;
-    }
-
-    // Add or update a landmark with a new observation
-    int addObservation(int frame_id, double x, double y, double X, double Y, double Z) {
-        // Check if frame exists
-        if (frame_poses_.find(frame_id) == frame_poses_.end()) {
-            return -1;
-        }
-        
-        // Create a new landmark
-        int landmark_id = next_landmark_id_++;
-        landmarks_[landmark_id] = std::make_shared<Landmark>(X, Y, Z);
-        
-        // Add the observation
-        observations_.emplace_back(x, y, landmark_id, frame_id);
-        
-        return landmark_id;
-    }
-
-    // Add an observation of an existing landmark
-    void addObservation(int frame_id, int landmark_id, double x, double y) {
-        // Check if frame and landmark exist
-        if (frame_poses_.find(frame_id) == frame_poses_.end() || 
-            landmarks_.find(landmark_id) == landmarks_.end()) {
-            return;
-        }
-        
-        // Add the observation
-        observations_.emplace_back(x, y, landmark_id, frame_id);
-    }
-
-    // Run robust bundle adjustment with weighted-squared reprojection error + Huber loss
-    void optimize(int num_iterations) {
-        // Create the Ceres problem
-        ceres::Problem problem;
-        
-        // Set up camera parameter blocks (only poses, intrinsics are fixed)
-        for (const auto& frame_pair : frame_poses_) {
-            int frame_id = frame_pair.first;
-            const auto& pose = frame_pair.second;
-            
-            problem.AddParameterBlock(pose->rotation, 4);
-            problem.AddParameterBlock(pose->translation, 3);
-            
-            // Fix the first camera pose for gauge freedom
-            if (frame_id == frame_queue_.front()) {
-                problem.SetParameterBlockConstant(pose->rotation);
-                problem.SetParameterBlockConstant(pose->translation);
-            }
-            
-            // Add quaternion normalization constraint
-            problem.SetManifold(pose->rotation, new ceres::EigenQuaternionManifold);
-        }
-        
-        // Add landmark parameter blocks
-        for (const auto& landmark_pair : landmarks_) {
-            const auto& landmark = landmark_pair.second;
-            
-            problem.AddParameterBlock(landmark->position, 3);
-            
-            // Fix landmarks if specified
-            if (landmark->fixed) {
-                problem.SetParameterBlockConstant(landmark->position);
-            }
-        }
-        
-        // Add residual blocks with weighted-squared reprojection error + Huber loss
-        for (const auto& obs : observations_) {
-            auto frame_it = frame_poses_.find(obs.frame_id);
-            auto landmark_it = landmarks_.find(obs.landmark_id);
-            
-            if (frame_it != frame_poses_.end() && landmark_it != landmarks_.end()) {
-                // Create weighted-squared reprojection error with FIXED intrinsics
-                ceres::CostFunction* cost_function = WeightedSquaredReprojectionError::Create(
-                    obs.pixel[0], obs.pixel[1], fx_, fy_, cx_, cy_, sigma_pixels_
-                );
+            // Add observations
+            int valid_observations = 0;
+            for (const auto& obs : observations) {
+                auto frame_it = frame_poses.find(obs.frame_id);
+                auto landmark_it = landmark_map.find(obs.landmark_id);
                 
-                problem.AddResidualBlock(
-                    cost_function,
-                    new ceres::HuberLoss(1.345),      // Standard Huber threshold for outlier rejection
-                    frame_it->second->rotation,       // Optimize: camera rotation
-                    frame_it->second->translation,    // Optimize: camera translation  
-                    landmark_it->second->position     // Optimize: 3D landmark position
-                );
-                // Note: Camera intrinsics (fx_, fy_, cx_, cy_) are fixed constants
+                if (frame_it != frame_poses.end() && landmark_it != landmark_map.end()) {
+                    ceres::CostFunction* cost_function = WeightedSquaredReprojectionError::Create(
+                        obs.pixel[0], obs.pixel[1], fx_, fy_, cx_, cy_, sigma_pixels_
+                    );
+                    
+                    problem.AddResidualBlock(
+                        cost_function,
+                        new ceres::HuberLoss(1.345),
+                        frame_it->second->rotation,
+                        frame_it->second->translation,
+                        landmark_it->second->position
+                    );
+                    
+                    valid_observations++;
+                }
             }
-        }
-        
-        // Solver options optimized for bundle adjustment
-        ceres::Solver::Options options;
-        
-        // Use Levenberg-Marquardt for robust convergence
-        options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-        options.initial_trust_region_radius = 1e4;
-        options.max_trust_region_radius = 1e8;
-        options.min_trust_region_radius = 1e-32;
-        
-        // SPARSE_SCHUR is optimal for bundle adjustment structure
-        options.linear_solver_type = ceres::SPARSE_SCHUR;
-        options.num_threads = 4;
-        options.max_num_iterations = num_iterations;
-        
-        // Convergence criteria
-        options.function_tolerance = 1e-6;
-        options.gradient_tolerance = 1e-10;
-        options.parameter_tolerance = 1e-8;
-        
-        options.minimizer_progress_to_stdout = false;
-        
-        // Run the solver
-        ceres::Solver::Summary summary;
-        ceres::Solve(options, &problem, &summary);
-        
-        // Optional: Log optimization results
-        if (summary.termination_type == ceres::CONVERGENCE) {
-            RCLCPP_DEBUG(rclcpp::get_logger("SlidingWindowBA"), 
-                        "BA converged: %d iterations, final cost: %e", 
-                        summary.num_successful_steps, summary.final_cost);
-        } else {
-            RCLCPP_WARN(rclcpp::get_logger("SlidingWindowBA"), 
-                       "BA did not converge: %s", summary.BriefReport().c_str());
-        }
-    }
-
-    // Get the latest optimized camera pose
-    std::pair<cv::Mat, cv::Mat> getLatestPose() const {
-        cv::Mat R = cv::Mat::eye(3, 3, CV_64F);
-        cv::Mat t = cv::Mat::zeros(3, 1, CV_64F);
-        
-        if (!frame_queue_.empty()) {
-            int latest_frame_id = frame_queue_.back();
-            auto it = frame_poses_.find(latest_frame_id);
             
-            if (it != frame_poses_.end()) {
-                it->second->toRt(R, t);
+            if (valid_observations == 0) {
+                result.message = "No valid observations";
+                result.optimization_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::high_resolution_clock::now() - start_time);
+                return result;
             }
+            
+            // Solve
+            ceres::Solver::Options options;
+            options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+            options.linear_solver_type = ceres::SPARSE_SCHUR;
+            options.num_threads = 4;
+            options.max_num_iterations = max_iterations;
+            options.function_tolerance = 1e-6;
+            options.gradient_tolerance = 1e-10;
+            options.parameter_tolerance = 1e-8;
+            options.minimizer_progress_to_stdout = false;
+            
+            ceres::Solver::Summary summary;
+            ceres::Solve(options, &problem, &summary);
+            
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto optimization_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            // Extract results
+            result.success = (summary.termination_type == ceres::CONVERGENCE);
+            result.final_cost = summary.final_cost;
+            result.iterations_completed = summary.num_successful_steps;
+            result.optimization_time = optimization_time;
+            
+            if (result.success) {
+                result.message = "Optimization converged successfully";
+            } else {
+                result.message = "Optimization did not converge";
+            }
+            
+            // Extract optimized poses
+            for (const auto& [frame_id, pose] : frame_poses) {
+                cv::Mat R, t;
+                pose->toRt(R, t);
+                result.optimized_poses[frame_id] = {R.clone(), t.clone()};
+            }
+            
+            // Extract optimized landmarks
+            for (const auto& [landmark_id, landmark] : landmark_map) {
+                result.optimized_landmarks[landmark_id] = cv::Point3d(
+                    landmark->position[0],
+                    landmark->position[1], 
+                    landmark->position[2]
+                );
+            }
+            
+        } catch (const std::exception& e) {
+            result.message = "Exception during optimization: " + std::string(e.what());
+            result.optimization_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() - start_time);
         }
         
-        return {R, t};
-    }
-
-    // Get a specific camera pose
-    std::pair<cv::Mat, cv::Mat> getPose(int frame_id) const {
-        cv::Mat R = cv::Mat::eye(3, 3, CV_64F);
-        cv::Mat t = cv::Mat::zeros(3, 1, CV_64F);
-        
-        auto it = frame_poses_.find(frame_id);
-        if (it != frame_poses_.end()) {
-            it->second->toRt(R, t);
-        }
-        
-        return {R, t};
+        return result;
     }
 
 private:
-    // Remove landmarks that are no longer observed
-    void pruneLandmarks() {
-        // First, collect all landmark IDs that are still observed
-        std::unordered_set<int> observed_landmarks;
-        for (const auto& obs : observations_) {
-            observed_landmarks.insert(obs.landmark_id);
-        }
-        
-        // Then remove any landmarks not in this set
-        auto it = landmarks_.begin();
-        while (it != landmarks_.end()) {
-            if (observed_landmarks.find(it->first) == observed_landmarks.end()) {
-                it = landmarks_.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-
-    // Camera parameters (fixed - not optimized)
     double fx_, fy_, cx_, cy_;
-    double sigma_pixels_;  // Isotropic Gaussian noise standard deviation
-    
-    // Sliding window parameters
-    int window_size_;
-    std::deque<int> frame_queue_;
-    
-    // Data structures
-    std::map<int, std::shared_ptr<CameraPose>> frame_poses_;
-    std::map<int, std::shared_ptr<Landmark>> landmarks_;
-    std::vector<Observation> observations_;
-    
-    // ID counters
-    int next_landmark_id_;
-    int next_frame_id_;
+    double sigma_pixels_;
 };
 
 #endif // BUNDLE_ADJUSTMENT_HPP

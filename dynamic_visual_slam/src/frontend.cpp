@@ -306,8 +306,6 @@ private:
         last_keyframe_descriptors_ = current_descriptors.clone();
 
         keyframe_pub_->publish(kf);
-
-        // RCLCPP_INFO(this->get_logger(), "Published KeyFrame!");
     }
 
     void estimateCameraPose(const std::vector<cv::KeyPoint>& prev_kps, const std::vector<cv::KeyPoint>& curr_kps, const std::vector<cv::DMatch>& good_matches, const cv::Mat& prev_depth, const rclcpp::Time& stamp) {
@@ -417,7 +415,7 @@ private:
             t_ = t_ + R_ * t_ros;
             R_ = R_ * R_ros;
 
-            // broadcastTransform(stamp);
+            broadcastTransform(stamp);
 
             RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
                         
@@ -557,9 +555,9 @@ private:
                     estimateCameraPose(prev_kps_, current_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
                 }
 
-                if (isKeyframe(current_descriptors)) {
-                    publishKeyframe(current_keypoints, current_descriptors, current_frame_depth, rgb_msg->header.stamp);
-                }
+                // if (isKeyframe(current_descriptors)) {
+                //     publishKeyframe(current_keypoints, current_descriptors, current_frame_depth, rgb_msg->header.stamp);
+                // }
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
