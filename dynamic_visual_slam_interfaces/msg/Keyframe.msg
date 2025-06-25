@@ -8,8 +8,3 @@ Landmark[] landmarks
 
 # 2D observations of landmarks in this frame  
 Observation[] observations
-
-# Descriptors
-uint8[] descriptors  # Flattened descriptor matrix
-int32 descriptor_rows
-int32 descriptor_cols

@@ -217,7 +217,7 @@ private:
         return false;
     }
 
-    bool isKeyframe(const cv::Mat& current_descriptors) {
+    bool isKeyframe(const cv::Mat& current_descriptors, const std::vector<cv::KeyPoint>& current_keypoints) {
         if (!has_last_keyframe_) {
             has_last_keyframe_ = true;
             return true;
@@ -225,22 +225,43 @@ private:
 
         bool tracking_criterion = false;
         if (!last_keyframe_descriptors_.empty() && !current_descriptors.empty()) {
-            std::vector<cv::DMatch> keyframe_matches;
-            matcher_.match(current_descriptors, last_keyframe_descriptors_, keyframe_matches);
+            std::vector<cv::DMatch> all_keyframe_matches;
+            matcher_.match(current_descriptors, last_keyframe_descriptors_, all_keyframe_matches);
             
-            std::vector<cv::DMatch> good_keyframe_matches;
+            std::vector<cv::DMatch> distance_filtered_keyframe_matches;
             float max_distance = 50.0f;
-            for (const auto& match : keyframe_matches) {
+            for (const auto& match : all_keyframe_matches) {
                 if (match.distance < max_distance) {
-                    good_keyframe_matches.push_back(match);
+                    distance_filtered_keyframe_matches.push_back(match);
                 }
             }
             
-            tracking_criterion = (good_keyframe_matches.size() < 50);
+            std::vector<cv::DMatch> geometrically_consistent_keyframe_matches;
+            if (distance_filtered_keyframe_matches.size() >= 8) {
+                std::vector<cv::Point2f> last_kf_pts, current_kf_pts;
+                for (const auto& match : distance_filtered_keyframe_matches) {
+                    last_kf_pts.push_back(last_keyframe_keypoints_[match.trainIdx].pt);
+                    current_kf_pts.push_back(current_keypoints[match.queryIdx].pt);
+                }
+                
+                std::vector<uchar> kf_inliers_mask;
+                cv::findFundamentalMat(last_kf_pts, current_kf_pts, kf_inliers_mask, cv::FM_RANSAC, 2.0, 0.99);
+                
+                for (size_t i = 0; i < kf_inliers_mask.size(); i++) {
+                    if (kf_inliers_mask[i]) {
+                        geometrically_consistent_keyframe_matches.push_back(distance_filtered_keyframe_matches[i]);
+                    }
+                }
+            } else {
+                geometrically_consistent_keyframe_matches = distance_filtered_keyframe_matches;
+            }
+            
+            RCLCPP_DEBUG(this->get_logger(), "Valid matches with last keyframe: %zu", geometrically_consistent_keyframe_matches.size());
+            
+            tracking_criterion = (geometrically_consistent_keyframe_matches.size() < 150);
         }
 
-        if (frames_since_last_keyframe_ > 30) {
-            RCLCPP_INFO(this->get_logger(), "Found keyframe!");
+        if (tracking_criterion || frames_since_last_keyframe_ > 30) {
             frames_since_last_keyframe_ = 0;
             return true;
         }
@@ -296,6 +317,8 @@ private:
                 obs.landmark_id = static_cast<uint64_t>(i);
                 obs.pixel_x = current_keypoints[i].pt.x;
                 obs.pixel_y = current_keypoints[i].pt.y;
+                cv::Mat descriptor_row = current_descriptors.row(i);
+                obs.descriptor.assign(descriptor_row.data, descriptor_row.data + descriptor_row.total());
                 
                 kf.landmarks.push_back(landmark);
                 kf.observations.push_back(obs);
@@ -304,10 +327,6 @@ private:
 
         last_keyframe_keypoints_ = current_keypoints;
         last_keyframe_descriptors_ = current_descriptors.clone();
-
-        kf.descriptors.assign(current_descriptors.data, current_descriptors.data + current_descriptors.total());
-        kf.descriptor_rows = current_descriptors.rows;
-        kf.descriptor_cols = current_descriptors.cols;
 
         keyframe_pub_->publish(kf);
     }
@@ -559,7 +578,7 @@ private:
                     estimateCameraPose(prev_kps_, current_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
                 }
 
-                if (isKeyframe(current_descriptors)) {
+                if (isKeyframe(current_descriptors, current_keypoints)) {
                     publishKeyframe(current_keypoints, current_descriptors, current_frame_depth, rgb_msg->header.stamp);
                 }
 

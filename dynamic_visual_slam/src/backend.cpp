@@ -123,8 +123,6 @@ private:
         keyframe_pose.orientation = msg->pose.rotation;
         keyframe_poses_.push_back(keyframe_pose);
 
-        keyframe_descriptors_.push_back(cv::Mat(msg->descriptor_rows, msg->descriptor_cols, CV_8U, const_cast<uint8_t*>(msg->descriptors.data())).clone());
-
         int frame_id = msg->frame_id;
 
         // Need to organize observations and landmarks
