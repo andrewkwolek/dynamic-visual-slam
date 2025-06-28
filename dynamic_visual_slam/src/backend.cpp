@@ -173,23 +173,24 @@ private:
         std::vector<ObservationInfo> new_observations;
 
         // Need to organize observations and landmarks
-        for (int i = 0; i < msg->observations.size(); i++) {
+        for (size_t i = 0; i < msg->observations.size(); i++) {
             const auto& obs = msg->observations[i];
             const auto& landmark = msg->landmarks[i];
 
             cv::Mat descriptor(1, obs.descriptor.size(), CV_8U);
             std::memcpy(descriptor.data, obs.descriptor.data(), obs.descriptor.size());
 
-            ObservationInfo new_obs(next_observation_id_++, msg->frame_id, cv::Point2f(obs.pixel_x, obs.pixel_y), descriptor);
+            ObservationInfo new_obs(next_observation_id_++, frame_id, cv::Point2f(obs.pixel_x, obs.pixel_y), descriptor);
 
             // Associate observation with existing landmarks
-            int associated_landmark_id = associateObservation(new_obs, R, t, landmark);
+            int associated_landmark_id = associateObservation(new_obs, R, t);
 
             if (associated_landmark_id != -1) {
                 new_obs.landmark_id = associated_landmark_id;
-                landmark_database_[associated_landmark_id].observation_count++;
-                landmark_database_[associated_landmark_id].last_seen = msg->header.stamp;
-                landmark_database_[associated_landmark_id].observation_ids.push_back(new_obs.observation_id);
+                auto& landmark_info = landmark_database_.at(associated_landmark_id);  // Use at() instead of []
+                landmark_info.observation_count++;
+                landmark_info.last_seen = msg->header.stamp;
+                landmark_info.observation_ids.push_back(new_obs.observation_id);
             }
             else {
                 // Create new landmark
@@ -219,7 +220,7 @@ private:
                     landmark_database_.size(), all_observations_.size());
     }
 
-    int associateObservation(const ObservationInfo& obs, const cv::Mat& R, const cv::Mat& t, const dynamic_visual_slam_interfaces::msg::Landmark& landmark) {
+    int associateObservation(const ObservationInfo& obs, const cv::Mat& R, const cv::Mat& t) {
         std::vector<std::pair<int, double>> candidates;
 
         // Find all candidates based on descriptor
@@ -244,7 +245,7 @@ private:
         double best_reprojection_error = std::numeric_limits<double>::max();
 
         for (const auto& [candidate_id, descriptor_distance] : candidates) {
-            const auto& candidate_landmark = landmark_database_[candidate_id];
+            const auto& candidate_landmark = landmark_database_.at(candidate_id);
 
             cv::Point3f landmark_3d_cv(candidate_landmark.position.x, candidate_landmark.position.y, candidate_landmark.position.z);
 
