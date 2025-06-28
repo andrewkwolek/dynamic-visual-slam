@@ -202,7 +202,7 @@ private:
                 LandmarkInfo new_landmark(new_landmark_id, landmark_pos, descriptor, msg->header.stamp);
                 new_landmark.observation_ids.push_back(new_obs.observation_id);
                 
-                landmark_database_[new_landmark_id] = new_landmark;
+                landmark_database_.emplace(new_landmark_id, new_landmark);
                 new_obs.landmark_id = new_landmark_id;
                 
                 RCLCPP_DEBUG(this->get_logger(), "Created new landmark %lu for observation %lu", 
