@@ -139,14 +139,15 @@ struct WeightedSquaredReprojectionError {
         point_camera[1] += camera_translation[1];
         point_camera[2] += camera_translation[2];
         
-        if (point_camera[2] <= T(0)) {
+        if (point_camera[0] <= T(0)) {  // X is forward in ROS frame
             residuals[0] = T(1000.0) * T(inv_sigma);
             residuals[1] = T(1000.0) * T(inv_sigma);
             return true;
         }
-        
-        T predicted_x = T(fx) * point_camera[0] / point_camera[2] + T(cx);
-        T predicted_y = T(fy) * point_camera[1] / point_camera[2] + T(cy);
+
+        // Project using ROS frame: X=forward, Y=left, Z=up
+        T predicted_x = T(fx) * (-point_camera[1]) / point_camera[0] + T(cx);
+        T predicted_y = T(fy) * (-point_camera[2]) / point_camera[0] + T(cy);
         
         T error_x = predicted_x - T(observed_x);
         T error_y = predicted_y - T(observed_y);

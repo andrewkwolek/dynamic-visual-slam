@@ -304,14 +304,18 @@ private:
             int y = static_cast<int>(std::round(pt.y));
             float pt_depth = current_depth_frame.at<uint16_t>(y, x) * 0.001f;
             cv::Point3f pt_3d((pt.x - rgb_cx_) * pt_depth / rgb_fx_, (pt.y - rgb_cy_) *pt_depth / rgb_fy_, pt_depth);
+
+            cv::Point3f pt_3d_ros;
+            pt_3d_ros.x = pt_3d.z;   // Optical Z (forward) → ROS X (forward)
+            pt_3d_ros.y = -pt_3d.x;  // Optical -X (left) → ROS Y (left) 
+            pt_3d_ros.z = -pt_3d.y;  // Optical -Y (up) → ROS Z (up)
             
-            if (pt_3d.z > 0.3 && pt_3d.z < 3.0) {
+            if (pt_3d_ros.x > 0.3 && pt_3d_ros.x < 3.0) {
                 dynamic_visual_slam_interfaces::msg::Landmark landmark;
                 landmark.landmark_id = static_cast<uint64_t>(i);
-                landmark.position.x = pt_3d.x;
-                landmark.position.y = pt_3d.y;
-                landmark.position.z = pt_3d.z;
-                landmark.is_new = true;
+                landmark.position.x = pt_3d_ros.x;
+                landmark.position.y = pt_3d_ros.y;
+                landmark.position.z = pt_3d_ros.z;
                 
                 dynamic_visual_slam_interfaces::msg::Observation obs;
                 obs.landmark_id = static_cast<uint64_t>(i);

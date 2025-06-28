@@ -1,5 +1,6 @@
 #include <opencv2/opencv.hpp>
 #include <memory>
+#include <vector>
 #include <unordered_map>
 
 #include "rclcpp/rclcpp.hpp"
@@ -46,6 +47,15 @@ public:
         bundle_adjustment_frequency_ = 10; // Run BA every 10 keyframes
         keyframe_count_ = 0;
         camera_params_initialized_ = false;
+
+        next_global_landmark_id_ = 1;
+        next_observation_id_ = 1;
+        descriptor_matcher_ = cv::BFMatcher(cv::NORM_HAMMING, false);
+
+        // Association parameters
+        max_descriptor_distance_ = 50.0;  // Hamming distance for ORB
+        max_reprojection_distance_ = 3.0;  // pixels
+        min_parallax_angle_ = 5.0;  // degrees
         
         // Initialize landmark map clearing flag
         map_cleared_ = false;
@@ -87,6 +97,41 @@ private:
     int bundle_adjustment_frequency_;
     int keyframe_count_;
 
+    struct LandmarkInfo {
+        uint64_t global_id;
+        geometry_msgs::msg::Point position;
+        cv::Mat descriptor;
+        std::vector<uint64_t> observation_ids;
+        int observation_count;
+        rclcpp::Time last_seen;
+
+        LandmarkInfo(uint64_t id, const geometry_msgs::msg::Point& pos, const cv::Mat& desc, const rclcpp::Time& timestamp)
+            : global_id(id), position(pos), descriptor(desc.clone()), observation_count(1), last_seen(timestamp) {}
+    };
+
+    struct ObservationInfo {
+        uint64_t observation_id;
+        uint64_t landmark_id;
+        uint64_t frame_id;
+        cv::Point2f pixel;
+        cv::Mat descriptor;
+
+        ObservationInfo(uint64_t obs_id, uint64_t frame, const cv::Point2f& pix, const cv::Mat& desc)
+            : observation_id(obs_id), landmark_id(0), frame_id(frame), pixel(pix), descriptor(desc.clone()) {}
+    };
+
+    // Add these member variables:
+    std::unordered_map<uint64_t, LandmarkInfo> landmark_database_;
+    std::vector<ObservationInfo> all_observations_;
+    uint64_t next_global_landmark_id_;
+    uint64_t next_observation_id_;
+    cv::BFMatcher descriptor_matcher_;
+
+    // Parameters for association
+    double max_descriptor_distance_;
+    double max_reprojection_distance_;
+    double min_parallax_angle_;
+
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         if (!camera_params_initialized_) {
             fx_ = msg->k[0];  // K[0,0]
@@ -125,7 +170,117 @@ private:
 
         int frame_id = msg->frame_id;
 
+        std::vector<ObservationInfo> new_observations;
+
         // Need to organize observations and landmarks
+        for (int i = 0; i < msg->observations.size(); i++) {
+            const auto& obs = msg->observations[i];
+            const auto& landmark = msg->landmarks[i];
+
+            cv::Mat descriptor(1, obs.descriptor.size(), CV_8U);
+            std::memcpy(descriptor.data, obs.descriptor.data(), obs.descriptor.size());
+
+            ObservationInfo new_obs(next_observation_id_++, msg->frame_id, cv::Point2f(obs.pixel_x, obs.pixel_y), descriptor);
+
+            // Associate observation with existing landmarks
+            int associated_landmark_id = associateObservation(new_obs, R, t, landmark);
+
+            if (associated_landmark_id != -1) {
+                new_obs.landmark_id = associated_landmark_id;
+                landmark_database_[associated_landmark_id].observation_count++;
+                landmark_database_[associated_landmark_id].last_seen = msg->header.stamp;
+                landmark_database_[associated_landmark_id].observation_ids.push_back(new_obs.observation_id);
+            }
+            else {
+                // Create new landmark
+                geometry_msgs::msg::Point landmark_pos;
+                landmark_pos.x = landmark.position.x;
+                landmark_pos.y = landmark.position.y;
+                landmark_pos.z = landmark.position.z;
+                
+                uint64_t new_landmark_id = next_global_landmark_id_++;
+                LandmarkInfo new_landmark(new_landmark_id, landmark_pos, descriptor, msg->header.stamp);
+                new_landmark.observation_ids.push_back(new_obs.observation_id);
+                
+                landmark_database_[new_landmark_id] = new_landmark;
+                new_obs.landmark_id = new_landmark_id;
+                
+                RCLCPP_DEBUG(this->get_logger(), "Created new landmark %lu for observation %lu", 
+                            new_landmark_id, new_obs.observation_id);
+            }
+            
+            new_observations.push_back(new_obs);
+        }
+        
+        // Add all new observations to database
+        all_observations_.insert(all_observations_.end(), new_observations.begin(), new_observations.end());
+        
+        RCLCPP_INFO(this->get_logger(), "Keyframe processed. Total landmarks: %zu, Total observations: %zu", 
+                    landmark_database_.size(), all_observations_.size());
+    }
+
+    int associateObservation(const ObservationInfo& obs, const cv::Mat& R, const cv::Mat& t, const dynamic_visual_slam_interfaces::msg::Landmark& landmark) {
+        std::vector<std::pair<int, double>> candidates;
+
+        // Find all candidates based on descriptor
+        for (const auto& [landmark_id, landmark_info] : landmark_database_) {
+            std::vector<cv::DMatch> matches;
+            std::vector<cv::Mat> query_descriptors = {obs.descriptor};
+            std::vector<cv::Mat> train_descriptors = {landmark_info.descriptor};
+
+            descriptor_matcher_.match(query_descriptors, train_descriptors, matches);
+
+            if (!matches.empty() && matches[0].distance < max_descriptor_distance_) {
+                candidates.emplace_back(landmark_id, matches[0].distance);
+            }
+        }
+
+        if (candidates.empty()) {
+            RCLCPP_DEBUG(this->get_logger(), "No matches, new landmark!");
+            return -1;
+        }
+
+        int best_landmark_id = -1;
+        double best_reprojection_error = std::numeric_limits<double>::max();
+
+        for (const auto& [candidate_id, descriptor_distance] : candidates) {
+            const auto& candidate_landmark = landmark_database_[candidate_id];
+
+            cv::Point3f landmark_3d_cv(candidate_landmark.position.x, candidate_landmark.position.y, candidate_landmark.position.z);
+
+            cv::Point2f reprojection_pixel = reprojectPoint(landmark_3d_cv, R, t);
+
+            double reprojection_error = cv::norm(obs.pixel - reprojection_pixel);
+
+            if (reprojection_error < max_reprojection_distance_ && reprojection_error < best_reprojection_error) {
+                best_landmark_id = candidate_id;
+                best_reprojection_error = reprojection_error;
+            }
+        }
+
+        if (best_landmark_id != -1) {
+            RCLCPP_DEBUG(this->get_logger(), "Found association with reprojection error: %.2f pixels", best_reprojection_error);
+        }
+
+        return best_landmark_id;
+    }
+
+    cv::Point2f reprojectPoint(const cv::Point3f& point_3d_ros, const cv::Mat& R, const cv::Mat& t) {
+        // Transform point from world to camera ROS frame
+        cv::Mat point_cam_ros = R.t() * (cv::Mat_<double>(3,1) << point_3d_ros.x, point_3d_ros.y, point_3d_ros.z) - R.t() * t;
+        
+        double x = point_cam_ros.at<double>(0);
+        double y = point_cam_ros.at<double>(1); 
+        double z = point_cam_ros.at<double>(2);
+        
+        if (x <= 0) {
+            return cv::Point2f(-1, -1);  // Invalid projection
+        }
+        
+        float u = fx_ * -y / x + cx_;
+        float v = fy_ * -z / x + cy_;
+        
+        return cv::Point2f(u, v);
     }
     
     void extractPoseFromTransform(const geometry_msgs::msg::Transform& transform, cv::Mat& R, cv::Mat& t) {
