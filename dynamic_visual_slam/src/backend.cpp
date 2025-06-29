@@ -81,7 +81,6 @@ private:
     double fx_, fy_, cx_, cy_;
     
     // Persistent landmark storage for mapping
-    std::unordered_map<uint64_t, geometry_msgs::msg::Point> all_landmarks_;
     std::unordered_map<uint64_t, int> landmark_observation_count_;
     std::unordered_map<uint64_t, rclcpp::Time> landmark_first_seen_;
     std::vector<geometry_msgs::msg::Pose> keyframe_poses_;
@@ -153,7 +152,7 @@ private:
         }
         
         RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
-                    msg->frame_id, msg->landmarks.size(), all_landmarks_.size());
+                    msg->frame_id, msg->landmarks.size(), landmark_database_.size());
 
         latest_keyframe_timestamp_ = msg->header.stamp;
 
@@ -217,6 +216,8 @@ private:
         
         RCLCPP_INFO(this->get_logger(), "Keyframe processed. Total landmarks: %zu, Total observations: %zu", 
                     landmark_database_.size(), all_observations_.size());
+
+        publishAllLandmarkMarkers();
     }
 
     int associateObservation(const ObservationInfo& obs, const cv::Mat& R, const cv::Mat& t) {
@@ -361,7 +362,7 @@ private:
         }
         
         landmark_markers_pub_->publish(marker_array);
-        RCLCPP_DEBUG(this->get_logger(), "Published %zu persistent landmark markers", all_landmarks_.size());
+        RCLCPP_DEBUG(this->get_logger(), "Published %zu persistent landmark markers", landmark_database_.size());
     }
 };
 
