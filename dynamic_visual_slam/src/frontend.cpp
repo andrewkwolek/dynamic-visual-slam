@@ -313,9 +313,12 @@ private:
             if (pt_3d_ros.x > 0.3 && pt_3d_ros.x < 3.0) {
                 dynamic_visual_slam_interfaces::msg::Landmark landmark;
                 landmark.landmark_id = static_cast<uint64_t>(i);
-                landmark.position.x = pt_3d_ros.x;
-                landmark.position.y = pt_3d_ros.y;
-                landmark.position.z = pt_3d_ros.z;
+                cv::Mat landmark_camera = (cv::Mat_<double>(3,1) << pt_3d_ros.x, pt_3d_ros.y, pt_3d_ros.z);
+                cv::Mat landmark_world = R_ * landmark_camera + t_;
+
+                landmark.position.x = landmark_world.at<double>(0);
+                landmark.position.y = landmark_world.at<double>(1);
+                landmark.position.z = landmark_world.at<double>(2);
                 
                 dynamic_visual_slam_interfaces::msg::Observation obs;
                 obs.landmark_id = static_cast<uint64_t>(i);
