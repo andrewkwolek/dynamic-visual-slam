@@ -201,14 +201,14 @@ private:
         
         double translation_norm = cv::norm(t_new);
         if (translation_norm > MAX_TRANSLATION) {
-            RCLCPP_WARN(this->get_logger(), "Translation outlier detected: %f m", translation_norm);
+            // RCLCPP_WARN(this->get_logger(), "Translation outlier detected: %f m", translation_norm);
             
 
             cv::Mat rvec;
             cv::Rodrigues(R_new, rvec);
             double rotation_angle = cv::norm(rvec);
             if (rotation_angle > MAX_ROTATION) {
-                RCLCPP_WARN(this->get_logger(), "Rotation outlier detected: %f rad", rotation_angle);
+                // RCLCPP_WARN(this->get_logger(), "Rotation outlier detected: %f rad", rotation_angle);
             }
 
             return true;
@@ -438,7 +438,7 @@ private:
             cv::Mat t_ros = T_ros(cv::Rect(3, 0, 1, 3));
 
             if (isMotionOutlier(R_ros, t_ros)) {
-                RCLCPP_WARN(this->get_logger(), "Motion outlier rejected - skipping frame");
+                // RCLCPP_WARN(this->get_logger(), "Motion outlier rejected - skipping frame");
                 return;
             }
 

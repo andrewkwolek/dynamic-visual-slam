@@ -40,6 +40,9 @@ public:
         // Create marker publishers for landmark visualization
         landmark_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/backend/landmark_markers", qos);
+
+        // BA callback
+        ba_timer_ = this->create_wall_timer(std::chrono::seconds(2), std::bind(&Backend::bundleAdjustmentCallback, this));
             
         // Parameters
         min_observations_for_landmark_ = 2;
@@ -86,7 +89,13 @@ private:
     std::vector<geometry_msgs::msg::Pose> keyframe_poses_;
     std::vector<cv::Mat> keyframe_descriptors_;
 
-    
+    // Bundle adjustment data structures
+    std::mutex keyframes_mutex_;
+    std::atomic<bool> ba_running_{false};
+
+    // Timer for bundle adjustment
+    rclcpp::TimerBase::SharedPtr ba_timer_;
+
     // Map management
     bool map_cleared_;
     
@@ -119,6 +128,18 @@ private:
             : observation_id(obs_id), landmark_id(0), frame_id(frame), pixel(pix), descriptor(desc.clone()) {}
     };
 
+    struct KeyframeInfo {
+        uint64_t frame_id;
+        cv::Mat R;
+        cv::Mat t;
+        rclcpp::Time timestamp;
+        std::vector<uint64_t> observation_ids;
+
+        KeyframeInfo(uint64_t id, const cv::Mat& rotation, const cv::Mat& translation, const rclcpp::Time& stamp)
+            : frame_id(id), R(rotation.clone()), t(translation.clone()), timestamp(stamp) {}
+    };
+
+    std::vector<KeyframeInfo> keyframes_;
     std::unordered_map<uint64_t, LandmarkInfo> landmark_database_;
     std::vector<ObservationInfo> all_observations_;
     uint64_t next_global_landmark_id_;
@@ -169,6 +190,7 @@ private:
         int frame_id = msg->frame_id;
 
         std::vector<ObservationInfo> new_observations;
+        KeyframeInfo new_keyframe(frame_id, R, t, latest_keyframe_timestamp_);
 
         // Need to organize observations and landmarks
         for (size_t i = 0; i < msg->observations.size(); i++) {
@@ -178,7 +200,9 @@ private:
             cv::Mat descriptor(1, obs.descriptor.size(), CV_8U);
             std::memcpy(descriptor.data, obs.descriptor.data(), obs.descriptor.size());
 
-            ObservationInfo new_obs(next_observation_id_++, frame_id, cv::Point2f(obs.pixel_x, obs.pixel_y), descriptor);
+            ObservationInfo new_obs(next_observation_id_, frame_id, cv::Point2f(obs.pixel_x, obs.pixel_y), descriptor);
+            new_keyframe.observation_ids.push_back(next_observation_id_);
+            next_observation_id_++;
 
             // Associate observation with existing landmarks
             int associated_landmark_id = associateObservation(new_obs, R, t);
@@ -218,6 +242,132 @@ private:
                     landmark_database_.size(), all_observations_.size());
 
         publishAllLandmarkMarkers();
+    }
+
+    void bundleAdjustmentCallback() {
+        if (ba_running_.load()) {
+            RCLCPP_INFO(this->get_logger(), "Bundle adjustment already running, skipping this cycle");
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(keyframes_mutex_);
+        
+        if (keyframes_.size() < 2) {
+            RCLCPP_INFO(this->get_logger(), "Not enough keyframes for BA: %zu", keyframes_.size());
+            return;
+        }
+
+        ba_running_.store(true);
+        
+        // Create sliding window (last 10 keyframes)
+        int window_size = std::min(10, static_cast<int>(keyframes_.size()));
+        int start_idx = keyframes_.size() - window_size;
+        
+        std::vector<KeyframeInfo> window_keyframe_infos(
+            keyframes_.begin() + start_idx, 
+            keyframes_.end()
+        );
+        
+        RCLCPP_INFO(this->get_logger(), "Starting bundle adjustment with %d keyframes (window %d-%zu)", 
+                    window_size, start_idx, keyframes_.size() - 1);
+        
+        // Extract KeyframeData vector for BA
+        std::vector<KeyframeData> window_keyframes;
+        for (const auto& kf_info : window_keyframe_infos) {
+            window_keyframes.emplace_back(kf_info.frame_id, kf_info.R, kf_info.t, kf_info.timestamp);
+        }
+        
+        // Collect window observation IDs efficiently
+        std::set<uint64_t> window_observation_ids;
+        for (const auto& kf_info : window_keyframe_infos) {
+            for (uint64_t obs_id : kf_info.observation_ids) {
+                window_observation_ids.insert(obs_id);
+            }
+        }
+        
+        // Extract observations and landmarks for the window
+        std::vector<Observation> window_observations;
+        std::set<uint64_t> window_landmark_ids;
+        
+        for (const auto& obs_info : all_observations_) {
+            if (window_observation_ids.count(obs_info.observation_id) > 0) {
+                window_landmark_ids.insert(obs_info.landmark_id);
+                window_observations.emplace_back(obs_info.pixel.x, obs_info.pixel.y, obs_info.landmark_id, obs_info.frame_id);
+            }
+        }
+        
+        // Extract landmarks for the window
+        std::vector<Landmark> window_landmarks;
+        for (uint64_t landmark_id : window_landmark_ids) {
+            const auto& landmark_info = landmark_database_.at(landmark_id);
+            window_landmarks.emplace_back(landmark_id, 
+                                        landmark_info.position.x, 
+                                        landmark_info.position.y, 
+                                        landmark_info.position.z,
+                                        false); // Don't fix landmarks
+        }
+        
+        RCLCPP_INFO(this->get_logger(), "Window contains %zu landmarks and %zu observations", 
+                    window_landmarks.size(), window_observations.size());
+        
+        // Run bundle adjustment directly in the timer callback
+        auto start_time = std::chrono::high_resolution_clock::now();
+        
+        OptimizationResult result = bundle_adjuster_->optimize(
+            window_keyframes, 
+            window_landmarks, 
+            window_observations,
+            20  // max iterations
+        );
+        
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        
+        if (result.success) {
+            RCLCPP_INFO(this->get_logger(), 
+                        "Bundle adjustment converged in %d iterations, final cost: %.6f, time: %ld ms",
+                        result.iterations_completed, result.final_cost, duration.count());
+            
+            // Update optimized poses and landmarks
+            updateOptimizedResults(result);
+        } else {
+            RCLCPP_WARN(this->get_logger(), 
+                        "Bundle adjustment failed: %s, time: %ld ms", 
+                        result.message.c_str(), duration.count());
+        }
+        
+        ba_running_.store(false);
+    }
+
+    void updateOptimizedResults(const OptimizationResult& result) {
+        // No need for mutex since we're already in the timer callback with the lock held
+        
+        // Update keyframe poses in the vector
+        for (const auto& [frame_id, pose_pair] : result.optimized_poses) {
+            const auto& [R_opt, t_opt] = pose_pair;
+            
+            // Find and update the corresponding keyframe
+            for (auto& kf_info : keyframes_) {
+                if (kf_info.frame_id == (uint64_t)frame_id) {
+                    kf_info.R = R_opt.clone();
+                    kf_info.t = t_opt.clone();
+                    break;
+                }
+            }
+        }
+        
+        // Update landmark positions in the database
+        for (const auto& [landmark_id, optimized_pos] : result.optimized_landmarks) {
+            auto it = landmark_database_.find(landmark_id);
+            if (it != landmark_database_.end()) {
+                it->second.position.x = optimized_pos.x;
+                it->second.position.y = optimized_pos.y;
+                it->second.position.z = optimized_pos.z;
+            }
+        }
+        
+        RCLCPP_DEBUG(this->get_logger(), "Updated %zu poses and %zu landmarks from BA", 
+                    result.optimized_poses.size(), result.optimized_landmarks.size());
     }
 
     int associateObservation(const ObservationInfo& obs, const cv::Mat& R, const cv::Mat& t) {
