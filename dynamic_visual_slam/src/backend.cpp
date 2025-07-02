@@ -231,9 +231,11 @@ private:
                 RCLCPP_DEBUG(this->get_logger(), "Created new landmark %lu for observation %lu", 
                             new_landmark_id, new_obs.observation_id);
             }
-            
+
             new_observations.push_back(new_obs);
         }
+
+        keyframes_.push_back(new_keyframe);
         
         // Add all new observations to database
         all_observations_.insert(all_observations_.end(), new_observations.begin(), new_observations.end());
@@ -414,20 +416,23 @@ private:
         return best_landmark_id;
     }
 
-    cv::Point2f reprojectPoint(const cv::Point3f& point_3d_ros, const cv::Mat& R, const cv::Mat& t) {
-        // Transform point from world to camera ROS frame
-        cv::Mat point_cam_ros = R.t() * (cv::Mat_<double>(3,1) << point_3d_ros.x, point_3d_ros.y, point_3d_ros.z) - R.t() * t;
+    cv::Point2f reprojectPoint(const cv::Point3f& point_3d_world, const cv::Mat& R, const cv::Mat& t) {
+        // Transform point from world to camera frame
+        cv::Mat point_world = (cv::Mat_<double>(3,1) << point_3d_world.x, point_3d_world.y, point_3d_world.z);
+        cv::Mat point_camera = R.t() * (point_world - t);  // T_camera_world = [R.t(), -R.t()*t]
         
-        double x = point_cam_ros.at<double>(0);
-        double y = point_cam_ros.at<double>(1); 
-        double z = point_cam_ros.at<double>(2);
+        double x = point_camera.at<double>(0);  // Forward in ROS frame
+        double y = point_camera.at<double>(1);  // Left in ROS frame  
+        double z = point_camera.at<double>(2);  // Up in ROS frame
         
         if (x <= 0) {
             return cv::Point2f(-1, -1);  // Invalid projection
         }
         
-        float u = fx_ * -y / x + cx_;
-        float v = fy_ * -z / x + cy_;
+        // Project using ROS frame: X=forward, Y=left, Z=up
+        // Camera projects: u = fx * (-Y/X) + cx, v = fy * (-Z/X) + cy
+        float u = fx_ * (-y) / x + cx_;
+        float v = fy_ * (-z) / x + cy_;
         
         return cv::Point2f(u, v);
     }
@@ -438,16 +443,19 @@ private:
         t.at<double>(1) = transform.translation.y;
         t.at<double>(2) = transform.translation.z;
         
+        // Convert quaternion to rotation matrix
         double qw = transform.rotation.w;
         double qx = transform.rotation.x;
         double qy = transform.rotation.y;
         double qz = transform.rotation.z;
         
-        R = cv::Mat(3, 3, CV_64F);
-        
+        // Normalize quaternion
         double norm = sqrt(qw*qw + qx*qx + qy*qy + qz*qz);
         qw /= norm; qx /= norm; qy /= norm; qz /= norm;
         
+        R = cv::Mat(3, 3, CV_64F);
+        
+        // Quaternion to rotation matrix conversion
         R.at<double>(0, 0) = 1 - 2*(qy*qy + qz*qz);
         R.at<double>(0, 1) = 2*(qx*qy - qw*qz);
         R.at<double>(0, 2) = 2*(qx*qz + qw*qy);
