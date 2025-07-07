@@ -469,7 +469,7 @@ private:
 
     void pruneLandmarks() {
         auto current_time = this->now();
-        const int min_observation_threshold = 1;
+        const int min_observation_threshold = 2;
         const double max_time_since_seen = 20.0;
         
         std::vector<uint64_t> landmarks_to_remove;
@@ -478,7 +478,7 @@ private:
             double time_since_seen = (current_time - landmark_info.last_seen).seconds();
             if (landmark_info.observation_count < min_observation_threshold && time_since_seen > max_time_since_seen) {
                 landmarks_to_remove.push_back(landmark_id);
-                RCLCPP_DEBUG(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %d)", 
+                RCLCPP_INFO(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %d)", 
                             landmark_id, landmark_info.observation_count, min_observation_threshold);
             }
         }
@@ -521,7 +521,7 @@ private:
                         removed_landmarks, removed_observations,
                         landmark_database_.size(), all_observations_.size());
         } else {
-            RCLCPP_DEBUG(this->get_logger(), "Landmark pruning: no landmarks removed");
+            RCLCPP_INFO(this->get_logger(), "Landmark pruning: no landmarks removed");
         }
     }
     

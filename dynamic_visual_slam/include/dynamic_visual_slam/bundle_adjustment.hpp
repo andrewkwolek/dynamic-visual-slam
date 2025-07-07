@@ -141,8 +141,8 @@ struct WeightedSquaredReprojectionError {
         point_camera[2] += camera_translation[2];
         
         if (point_camera[2] <= T(0.1)) {
-            residuals[0] = T(1000.0);
-            residuals[1] = T(1000.0);
+            residuals[0] = T(0.0);
+            residuals[1] = T(0.0);
             return true;
         }
 
@@ -260,18 +260,10 @@ public:
             options.linear_solver_type = ceres::SPARSE_SCHUR;
             options.num_threads = 4;
             options.max_num_iterations = max_iterations;
-
-            options.function_tolerance = 1e-4;
-            options.gradient_tolerance = 1e-8;
-            options.parameter_tolerance = 1e-6;
-
-            options.max_solver_time_in_seconds = 0.5;  // 500ms timeout
+            options.function_tolerance = 1e-6;
+            options.gradient_tolerance = 1e-10;
+            options.parameter_tolerance = 1e-8;
             options.minimizer_progress_to_stdout = false;
-
-            options.initial_trust_region_radius = 1e4;
-            options.max_trust_region_radius = 1e16;
-            options.min_relative_decrease = 1e-6;
-            
             ceres::Solver::Summary summary;
             ceres::Solve(options, &problem, &summary);
             
