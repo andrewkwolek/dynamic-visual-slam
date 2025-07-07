@@ -337,6 +337,10 @@ private:
                         "Bundle adjustment failed: %s, time: %ld ms", 
                         result.message.c_str(), duration.count());
         }
+
+        pruneLandmarks();
+
+        publishAllLandmarkMarkers();
         
         ba_running_.store(false);
     }
@@ -461,6 +465,64 @@ private:
         R.at<double>(2, 0) = 2*(qx*qz - qw*qy);
         R.at<double>(2, 1) = 2*(qy*qz + qw*qx);
         R.at<double>(2, 2) = 1 - 2*(qx*qx + qy*qy);
+    }
+
+    void pruneLandmarks() {
+        auto current_time = this->now();
+        const double min_observation_threshold = 1.0;
+        const double max_time_since_seen = 5.0;
+        
+        std::vector<uint64_t> landmarks_to_remove;
+        
+        for (const auto& [landmark_id, landmark_info] : landmark_database_) {
+            double time_since_seen = (current_time - landmark_info.last_seen).seconds();
+            if (landmark_info.observation_count < min_observation_threshold && time_since_seen > max_time_since_seen) {
+                landmarks_to_remove.push_back(landmark_id);
+                RCLCPP_DEBUG(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %.0f)", 
+                            landmark_id, landmark_info.observation_count, min_observation_threshold);
+            }
+        }
+        
+        int removed_landmarks = 0;
+        int removed_observations = 0;
+        
+        for (uint64_t landmark_id : landmarks_to_remove) {
+            const auto& landmark_info = landmark_database_.at(landmark_id);
+            std::set<uint64_t> obs_ids_to_remove(landmark_info.observation_ids.begin(), 
+                                                 landmark_info.observation_ids.end());
+            
+            landmark_database_.erase(landmark_id);
+            removed_landmarks++;
+            
+            auto obs_it = all_observations_.begin();
+            while (obs_it != all_observations_.end()) {
+                if (obs_ids_to_remove.count(obs_it->observation_id) > 0 || 
+                    obs_it->landmark_id == landmark_id) {
+                    obs_it = all_observations_.erase(obs_it);
+                    removed_observations++;
+                } else {
+                    ++obs_it;
+                }
+            }
+            
+            for (auto& keyframe : keyframes_) {
+                auto& obs_ids = keyframe.observation_ids;
+                obs_ids.erase(
+                    std::remove_if(obs_ids.begin(), obs_ids.end(), [&obs_ids_to_remove](uint64_t obs_id) { return obs_ids_to_remove.count(obs_id) > 0; }),
+                    obs_ids.end()
+                );
+            }
+        }
+        
+        if (removed_landmarks > 0) {
+            RCLCPP_INFO(this->get_logger(), 
+                        "Landmark pruning completed: removed %d landmarks and %d observations. "
+                        "Remaining landmarks: %zu, observations: %zu", 
+                        removed_landmarks, removed_observations,
+                        landmark_database_.size(), all_observations_.size());
+        } else {
+            RCLCPP_DEBUG(this->get_logger(), "Landmark pruning: no landmarks removed");
+        }
     }
     
     void publishAllLandmarkMarkers() {
