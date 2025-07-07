@@ -417,22 +417,19 @@ private:
     }
 
     cv::Point2f reprojectPoint(const cv::Point3f& point_3d_world, const cv::Mat& R, const cv::Mat& t) {
-        // Transform point from world to camera frame
         cv::Mat point_world = (cv::Mat_<double>(3,1) << point_3d_world.x, point_3d_world.y, point_3d_world.z);
-        cv::Mat point_camera = R.t() * (point_world - t);  // T_camera_world = [R.t(), -R.t()*t]
+        cv::Mat point_camera = R.t() * (point_world - t);
         
-        double x = point_camera.at<double>(0);  // Forward in ROS frame
-        double y = point_camera.at<double>(1);  // Left in ROS frame  
-        double z = point_camera.at<double>(2);  // Up in ROS frame
+        double x = point_camera.at<double>(0);  // Right in optical frame
+        double y = point_camera.at<double>(1);  // Down in optical frame
+        double z = point_camera.at<double>(2);  // Forward in optical frame
         
-        if (x <= 0) {
-            return cv::Point2f(-1, -1);  // Invalid projection
+        if (z <= 0) {
+            return cv::Point2f(-1, -1);
         }
         
-        // Project using ROS frame: X=forward, Y=left, Z=up
-        // Camera projects: u = fx * (-Y/X) + cx, v = fy * (-Z/X) + cy
-        float u = fx_ * (-y) / x + cx_;
-        float v = fy_ * (-z) / x + cy_;
+        float u = fx_ * x / z + cx_;
+        float v = fy_ * y / z + cy_;
         
         return cv::Point2f(u, v);
     }
@@ -443,19 +440,16 @@ private:
         t.at<double>(1) = transform.translation.y;
         t.at<double>(2) = transform.translation.z;
         
-        // Convert quaternion to rotation matrix
         double qw = transform.rotation.w;
         double qx = transform.rotation.x;
         double qy = transform.rotation.y;
         double qz = transform.rotation.z;
         
-        // Normalize quaternion
         double norm = sqrt(qw*qw + qx*qx + qy*qy + qz*qz);
         qw /= norm; qx /= norm; qy /= norm; qz /= norm;
         
         R = cv::Mat(3, 3, CV_64F);
         
-        // Quaternion to rotation matrix conversion
         R.at<double>(0, 0) = 1 - 2*(qy*qy + qz*qz);
         R.at<double>(0, 1) = 2*(qx*qy - qw*qz);
         R.at<double>(0, 2) = 2*(qx*qz + qw*qy);
@@ -482,6 +476,13 @@ private:
             map_cleared_ = true;
         }
         
+        // Transformation matrix from optical to ROS for visualization
+        cv::Mat T_opt_to_ros = (cv::Mat_<double>(3,3) << 
+            0,  0,  1,    // Optical Z → ROS X (forward)
+            -1, 0,  0,    // Optical -X → ROS Y (left)
+            0, -1,  0     // Optical -Y → ROS Z (up)
+        );
+        
         for (const auto& [landmark_id, landmark_info] : landmark_database_) {
             visualization_msgs::msg::Marker marker;
             marker.header.frame_id = "world";
@@ -491,7 +492,16 @@ private:
             marker.type = visualization_msgs::msg::Marker::SPHERE;
             marker.action = visualization_msgs::msg::Marker::ADD;
             
-            marker.pose.position = landmark_info.position;
+            // Convert landmark position from optical to ROS for visualization
+            cv::Mat pos_optical = (cv::Mat_<double>(3,1) << 
+                landmark_info.position.x, 
+                landmark_info.position.y, 
+                landmark_info.position.z);
+            cv::Mat pos_ros = T_opt_to_ros * pos_optical;
+            
+            marker.pose.position.x = pos_ros.at<double>(0);
+            marker.pose.position.y = pos_ros.at<double>(1);
+            marker.pose.position.z = pos_ros.at<double>(2);
             marker.pose.orientation.x = 0.0;
             marker.pose.orientation.y = 0.0;
             marker.pose.orientation.z = 0.0;
@@ -520,7 +530,8 @@ private:
         }
         
         landmark_markers_pub_->publish(marker_array);
-        RCLCPP_DEBUG(this->get_logger(), "Published %zu persistent landmark markers", landmark_database_.size());
+        RCLCPP_DEBUG(this->get_logger(), "Published %zu landmark markers (converted from optical to ROS)", 
+                    landmark_database_.size());
     }
 };
 

@@ -124,7 +124,6 @@ struct OptimizationResult {
     std::map<uint64_t, cv::Point3d> optimized_landmarks;
 };
 
-// Reprojection error cost function
 struct WeightedSquaredReprojectionError {
     WeightedSquaredReprojectionError(double observed_x, double observed_y, double fx, double fy, double cx, double cy, double sigma_pixels)
         : observed_x(observed_x), observed_y(observed_y), fx(fx), fy(fy), cx(cx), cy(cy), inv_sigma(1.0 / sigma_pixels) {}
@@ -132,22 +131,22 @@ struct WeightedSquaredReprojectionError {
     template <typename T>
     bool operator()(const T* const camera_rotation, const T* const camera_translation,
                     const T* const point, T* residuals) const {
+        
         T point_camera[3];
         ceres::QuaternionRotatePoint(camera_rotation, point, point_camera);
         
         point_camera[0] += camera_translation[0];
-        point_camera[1] += camera_translation[1];
+        point_camera[1] += camera_translation[1]; 
         point_camera[2] += camera_translation[2];
         
-        if (point_camera[0] <= T(0)) {  // X is forward in ROS frame
+        if (point_camera[2] <= T(0.1)) {
             residuals[0] = T(1000.0) * T(inv_sigma);
             residuals[1] = T(1000.0) * T(inv_sigma);
             return true;
         }
 
-        // Project using ROS frame: X=forward, Y=left, Z=up
-        T predicted_x = T(fx) * (-point_camera[1]) / point_camera[0] + T(cx);
-        T predicted_y = T(fy) * (-point_camera[2]) / point_camera[0] + T(cy);
+        T predicted_x = T(fx) * point_camera[0] / point_camera[2] + T(cx);
+        T predicted_y = T(fy) * point_camera[1] / point_camera[2] + T(cy);
         
         T error_x = predicted_x - T(observed_x);
         T error_y = predicted_y - T(observed_y);
@@ -260,10 +259,17 @@ public:
             options.linear_solver_type = ceres::SPARSE_SCHUR;
             options.num_threads = 4;
             options.max_num_iterations = max_iterations;
-            options.function_tolerance = 1e-6;
-            options.gradient_tolerance = 1e-10;
-            options.parameter_tolerance = 1e-8;
+
+            options.function_tolerance = 1e-4;
+            options.gradient_tolerance = 1e-8;
+            options.parameter_tolerance = 1e-6;
+
+            options.max_solver_time_in_seconds = 0.5;  // 500ms timeout
             options.minimizer_progress_to_stdout = false;
+
+            options.initial_trust_region_radius = 1e4;
+            options.max_trust_region_radius = 1e16;
+            options.min_relative_decrease = 1e-6;
             
             ceres::Solver::Summary summary;
             ceres::Solve(options, &problem, &summary);

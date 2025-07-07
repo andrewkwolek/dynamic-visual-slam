@@ -133,7 +133,7 @@ private:
     // ORB Feature detector
     cv::Ptr<cv::ORB> orb_detector_;
 
-    // FLANN feature matcher
+    // BF feature matcher
     cv::BFMatcher matcher_;
 
     // Message filter synchronizer
@@ -163,36 +163,50 @@ private:
     cv::Mat last_keyframe_depth_;
     bool has_last_keyframe_;
 
-    void broadcastTransform(const rclcpp::Time& stamp) {
-        // First convert rotation matrix to quaternion
+    void broadcastTransformROS(const rclcpp::Time& stamp) {
+        // Transformation matrix from optical frame to ROS frame
+        // Optical: X=right, Y=down, Z=forward
+        // ROS:     X=forward, Y=left, Z=up
+        cv::Mat T_opt_to_ros = (cv::Mat_<double>(3,3) << 
+            0,  0,  1,    // Optical Z → ROS X (forward)
+            -1, 0,  0,    // Optical -X → ROS Y (left)
+            0, -1,  0     // Optical -Y → ROS Z (up)
+        );
+        
+        cv::Mat R_ros = T_opt_to_ros * R_ * T_opt_to_ros.t();
+        cv::Mat t_ros = T_opt_to_ros * t_;
+        
         Eigen::Matrix3d R_eigen;
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
-                R_eigen(i, j) = R_.at<double>(i, j);
+                R_eigen(i, j) = R_ros.at<double>(i, j);
             }
         }
         
         Eigen::Quaterniond q(R_eigen);
         
-        // Create the transform message for odom -> camera
+        q.normalize();
+        
         geometry_msgs::msg::TransformStamped transform_stamped;
         transform_stamped.header.stamp = stamp;
         transform_stamped.header.frame_id = "odom";
         transform_stamped.child_frame_id = "camera_link";
         
-        // Set the translation
-        transform_stamped.transform.translation.x = t_.at<double>(0);
-        transform_stamped.transform.translation.y = t_.at<double>(1);
-        transform_stamped.transform.translation.z = t_.at<double>(2);
+        transform_stamped.transform.translation.x = t_ros.at<double>(0);
+        transform_stamped.transform.translation.y = t_ros.at<double>(1);
+        transform_stamped.transform.translation.z = t_ros.at<double>(2);
         
-        // Set the rotation
         transform_stamped.transform.rotation.x = q.x();
         transform_stamped.transform.rotation.y = q.y();
         transform_stamped.transform.rotation.z = q.z();
         transform_stamped.transform.rotation.w = q.w();
         
-        // Broadcast the transform
         tf_broadcaster_->sendTransform(transform_stamped);
+        
+        RCLCPP_DEBUG(this->get_logger(), 
+                    "Broadcasted TF - Position: [%.3f, %.3f, %.3f], Quat: [%.3f, %.3f, %.3f, %.3f]",
+                    t_ros.at<double>(0), t_ros.at<double>(1), t_ros.at<double>(2),
+                    q.x(), q.y(), q.z(), q.w());
     }
 
     bool isMotionOutlier(const cv::Mat& R_new, const cv::Mat& t_new) {
@@ -273,27 +287,25 @@ private:
     void publishKeyframe(const std::vector<cv::KeyPoint>& current_keypoints, const cv::Mat& current_descriptors, const cv::Mat& current_depth_frame, const rclcpp::Time& stamp) {
         dynamic_visual_slam_interfaces::msg::Keyframe kf;
 
-        geometry_msgs::msg::Transform transform;
-    
         Eigen::Matrix3d R_eigen;
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
-                R_eigen(i, j) = R_.at<double>(i, j);
+                R_eigen(i, j) = R_.at<double>(i, j);  // R_ is in optical
             }
         }
         Eigen::Quaterniond q(R_eigen);
+        q.normalize();
         
-        transform.translation.x = t_.at<double>(0);
+        geometry_msgs::msg::Transform transform;
+        transform.translation.x = t_.at<double>(0);  // t_ is in optical
         transform.translation.y = t_.at<double>(1);
         transform.translation.z = t_.at<double>(2);
-        
         transform.rotation.x = q.x();
         transform.rotation.y = q.y();
         transform.rotation.z = q.z();
         transform.rotation.w = q.w();
 
         kf.pose = transform;
-
         kf.header.frame_id = "camera_link";
         kf.header.stamp = stamp;
         kf.frame_id = keyframe_id_++;
@@ -303,19 +315,18 @@ private:
             int x = static_cast<int>(std::round(pt.x));
             int y = static_cast<int>(std::round(pt.y));
             float pt_depth = current_depth_frame.at<uint16_t>(y, x) * 0.001f;
-            cv::Point3f pt_3d((pt.x - rgb_cx_) * pt_depth / rgb_fx_, (pt.y - rgb_cy_) *pt_depth / rgb_fy_, pt_depth);
-
-            cv::Point3f pt_3d_ros;
-            pt_3d_ros.x = pt_3d.z;   // Optical Z (forward) → ROS X (forward)
-            pt_3d_ros.y = -pt_3d.x;  // Optical -X (left) → ROS Y (left) 
-            pt_3d_ros.z = -pt_3d.y;  // Optical -Y (up) → ROS Z (up)
             
-            if (pt_3d_ros.x > 0.3 && pt_3d_ros.x < 3.0) {
-                dynamic_visual_slam_interfaces::msg::Landmark landmark;
-                landmark.landmark_id = static_cast<uint64_t>(i);
-                cv::Mat landmark_camera = (cv::Mat_<double>(3,1) << pt_3d_ros.x, pt_3d_ros.y, pt_3d_ros.z);
+            cv::Point3f pt_3d_optical((pt.x - rgb_cx_) * pt_depth / rgb_fx_, 
+                                    (pt.y - rgb_cy_) * pt_depth / rgb_fy_, 
+                                    pt_depth);
+            
+            if (pt_3d_optical.z > 0.3 && pt_3d_optical.z < 3.0) {
+                cv::Mat landmark_camera = (cv::Mat_<double>(3,1) << 
+                    pt_3d_optical.x, pt_3d_optical.y, pt_3d_optical.z);
                 cv::Mat landmark_world = R_ * landmark_camera + t_;
 
+                dynamic_visual_slam_interfaces::msg::Landmark landmark;
+                landmark.landmark_id = static_cast<uint64_t>(i);
                 landmark.position.x = landmark_world.at<double>(0);
                 landmark.position.y = landmark_world.at<double>(1);
                 landmark.position.z = landmark_world.at<double>(2);
@@ -366,6 +377,7 @@ private:
                     continue;
                 }
                 
+                // Keep in optical coordinates (this is what solvePnP expects)
                 cv::Point3f pt3d_prev((prev_pt.x - rgb_cx_) * d_prev / rgb_fx_, 
                                     (prev_pt.y - rgb_cy_) * d_prev / rgb_fy_, 
                                     d_prev);
@@ -388,7 +400,7 @@ private:
             std::vector<int> inliers;
             
             bool success = cv::solvePnPRansac(
-                points3d,           // 3D points from previous frame
+                points3d,           // 3D points from previous frame (optical)
                 points2d,           // 2D points in current frame
                 rgb_camera_matrix_, // Camera matrix
                 rgb_dist_coeffs_,   // Distortion coefficients
@@ -409,46 +421,18 @@ private:
             cv::Mat R_curr_inv = R_relative.t();
             cv::Mat t_curr_inv = -R_curr_inv * t_relative;
 
-            cv::Mat T_optical_to_ros = cv::Mat::eye(4, 4, CV_64F);
-            
-            // For RealSense cameras and standard ROS conventions:
-            // X_ros = Z_optical
-            // Y_ros = -X_optical
-            // Z_ros = -Y_optical
-            T_optical_to_ros.at<double>(0, 0) = 0.0;  // Optical Z → ROS X
-            T_optical_to_ros.at<double>(0, 1) = 0.0;
-            T_optical_to_ros.at<double>(0, 2) = 1.0;
-            
-            T_optical_to_ros.at<double>(1, 0) = -1.0; // Optical -X → ROS Y
-            T_optical_to_ros.at<double>(1, 1) = 0.0;
-            T_optical_to_ros.at<double>(1, 2) = 0.0;
-            
-            T_optical_to_ros.at<double>(2, 0) = 0.0;  // Optical -Y → ROS Z
-            T_optical_to_ros.at<double>(2, 1) = -1.0;
-            T_optical_to_ros.at<double>(2, 2) = 0.0;
-
-            cv::Mat T_optical = cv::Mat::eye(4, 4, CV_64F);
-            R_curr_inv.copyTo(T_optical(cv::Rect(0, 0, 3, 3)));
-            t_curr_inv.copyTo(T_optical(cv::Rect(3, 0, 1, 3)));
-            
-            // Transform to ROS frame
-            cv::Mat T_ros = T_optical_to_ros * T_optical * T_optical_to_ros.inv();
-
-            cv::Mat R_ros = T_ros(cv::Rect(0, 0, 3, 3));
-            cv::Mat t_ros = T_ros(cv::Rect(3, 0, 1, 3));
-
-            if (isMotionOutlier(R_ros, t_ros)) {
-                // RCLCPP_WARN(this->get_logger(), "Motion outlier rejected - skipping frame");
+            if (isMotionOutlier(R_curr_inv, t_curr_inv)) {
                 return;
             }
 
-            t_ = t_ + R_ * t_ros;
-            R_ = R_ * R_ros;
+            t_ = t_ + R_ * t_curr_inv;
+            R_ = R_ * R_curr_inv;
 
-            broadcastTransform(stamp);
+            broadcastTransformROS(stamp);
 
-            RCLCPP_DEBUG(this->get_logger(), "Camera position: [%f, %f, %f]", t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
-                        
+            RCLCPP_DEBUG(this->get_logger(), "Camera position (optical): [%f, %f, %f]", 
+                        t_.at<double>(0), t_.at<double>(1), t_.at<double>(2));
+                            
         } catch (const cv::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Exception during PnP estimation: %s", e.what());
             return;
