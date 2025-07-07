@@ -17,53 +17,54 @@
 
 // Structure to store camera parameters for optimization
 struct CameraPose {
-    double rotation[4];    // Quaternion (w, x, y, z)
-    double translation[3]; // Translation vector (x, y, z)
+    double rotation[4];
+    double translation[3];
 
     CameraPose() {
-        rotation[0] = 1.0; // w
-        rotation[1] = 0.0; // x
-        rotation[2] = 0.0; // y
-        rotation[3] = 0.0; // z
-        translation[0] = 0.0;
-        translation[1] = 0.0;
-        translation[2] = 0.0;
+        rotation[0] = 1.0; rotation[1] = 0.0; rotation[2] = 0.0; rotation[3] = 0.0;
+        translation[0] = 0.0; translation[1] = 0.0; translation[2] = 0.0;
     }
 
-    void fromRt(const cv::Mat& R, const cv::Mat& t) {
+    void fromRt(const cv::Mat& R_world_camera, const cv::Mat& t_world_camera) {
+        cv::Mat R_camera_world = R_world_camera.t(); 
+        cv::Mat t_camera_world = -R_camera_world * t_world_camera;
+        
         Eigen::Matrix3d R_eigen;
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
-                R_eigen(i, j) = R.at<double>(i, j);
+                R_eigen(i, j) = R_camera_world.at<double>(i, j);
             }
         }
         
         Eigen::Quaterniond q(R_eigen);
+        q.normalize();
         rotation[0] = q.w();
         rotation[1] = q.x();
         rotation[2] = q.y();
         rotation[3] = q.z();
         
-        translation[0] = t.at<double>(0);
-        translation[1] = t.at<double>(1);
-        translation[2] = t.at<double>(2);
+        translation[0] = t_camera_world.at<double>(0);
+        translation[1] = t_camera_world.at<double>(1);
+        translation[2] = t_camera_world.at<double>(2);
     }
 
-    void toRt(cv::Mat& R, cv::Mat& t) const {
+    void toRt(cv::Mat& R_world_camera, cv::Mat& t_world_camera) const {
         Eigen::Quaterniond q(rotation[0], rotation[1], rotation[2], rotation[3]);
-        Eigen::Matrix3d R_eigen = q.toRotationMatrix();
+        Eigen::Matrix3d R_camera_world = q.toRotationMatrix();
         
-        R = cv::Mat(3, 3, CV_64F);
+        Eigen::Matrix3d R_world_camera_eigen = R_camera_world.transpose();
+        Eigen::Vector3d t_camera_world_vec(translation[0], translation[1], translation[2]);
+        Eigen::Vector3d t_world_camera_vec = -R_world_camera_eigen * t_camera_world_vec;
+        
+        R_world_camera = cv::Mat(3, 3, CV_64F);
+        t_world_camera = cv::Mat(3, 1, CV_64F);
+        
         for (int i = 0; i < 3; i++) {
             for (int j = 0; j < 3; j++) {
-                R.at<double>(i, j) = R_eigen(i, j);
+                R_world_camera.at<double>(i, j) = R_world_camera_eigen(i, j);
             }
+            t_world_camera.at<double>(i) = t_world_camera_vec(i);
         }
-        
-        t = cv::Mat(3, 1, CV_64F);
-        t.at<double>(0) = translation[0];
-        t.at<double>(1) = translation[1];
-        t.at<double>(2) = translation[2];
     }
 };
 
@@ -140,8 +141,8 @@ struct WeightedSquaredReprojectionError {
         point_camera[2] += camera_translation[2];
         
         if (point_camera[2] <= T(0.1)) {
-            residuals[0] = T(1000.0) * T(inv_sigma);
-            residuals[1] = T(1000.0) * T(inv_sigma);
+            residuals[0] = T(1000.0);
+            residuals[1] = T(1000.0);
             return true;
         }
 
