@@ -261,8 +261,8 @@ private:
 
         ba_running_.store(true);
         
-        // Create sliding window (last 10 keyframes)
-        int window_size = std::min(10, static_cast<int>(keyframes_.size()));
+        // Create sliding window (last 5 keyframes)
+        int window_size = std::min(5, static_cast<int>(keyframes_.size()));
         int start_idx = keyframes_.size() - window_size;
         
         std::vector<KeyframeInfo> window_keyframe_infos(
@@ -469,8 +469,8 @@ private:
 
     void pruneLandmarks() {
         auto current_time = this->now();
-        const double min_observation_threshold = 1.0;
-        const double max_time_since_seen = 5.0;
+        const int min_observation_threshold = 1;
+        const double max_time_since_seen = 20.0;
         
         std::vector<uint64_t> landmarks_to_remove;
         
@@ -478,7 +478,7 @@ private:
             double time_since_seen = (current_time - landmark_info.last_seen).seconds();
             if (landmark_info.observation_count < min_observation_threshold && time_since_seen > max_time_since_seen) {
                 landmarks_to_remove.push_back(landmark_id);
-                RCLCPP_DEBUG(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %.0f)", 
+                RCLCPP_DEBUG(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %d)", 
                             landmark_id, landmark_info.observation_count, min_observation_threshold);
             }
         }
