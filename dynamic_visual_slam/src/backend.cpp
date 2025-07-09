@@ -56,7 +56,7 @@ public:
         descriptor_matcher_ = cv::BFMatcher(cv::NORM_HAMMING, false);
 
         // Association parameters
-        max_descriptor_distance_ = 50.0;  // Hamming distance for ORB
+        max_descriptor_distance_ = 25.0;  // Hamming distance for ORB
         max_reprojection_distance_ = 3.0;  // pixels
         min_parallax_angle_ = 5.0;  // degrees
         
@@ -82,12 +82,6 @@ private:
     // Camera parameters
     bool camera_params_initialized_;
     double fx_, fy_, cx_, cy_;
-    
-    // Persistent landmark storage for mapping
-    std::unordered_map<uint64_t, int> landmark_observation_count_;
-    std::unordered_map<uint64_t, rclcpp::Time> landmark_first_seen_;
-    std::vector<geometry_msgs::msg::Pose> keyframe_poses_;
-    std::vector<cv::Mat> keyframe_descriptors_;
 
     // Bundle adjustment data structures
     std::mutex keyframes_mutex_;
@@ -107,13 +101,13 @@ private:
 
     struct LandmarkInfo {
         uint64_t global_id;
-        geometry_msgs::msg::Point position;
+        cv::Point3f position;
         cv::Mat descriptor;
         std::vector<uint64_t> observation_ids;
         int observation_count;
         rclcpp::Time last_seen;
 
-        LandmarkInfo(uint64_t id, const geometry_msgs::msg::Point& pos, const cv::Mat& desc, const rclcpp::Time& timestamp)
+        LandmarkInfo(uint64_t id, const cv::Point3f& pos, const cv::Mat& desc, const rclcpp::Time& timestamp)
             : global_id(id), position(pos), descriptor(desc.clone()), observation_count(1), last_seen(timestamp) {}
     };
 
@@ -180,16 +174,10 @@ private:
         cv::Mat R, t;
         extractPoseFromTransform(msg->pose, R, t);
 
-        geometry_msgs::msg::Pose keyframe_pose;
-        keyframe_pose.position.x = msg->pose.translation.x;
-        keyframe_pose.position.y = msg->pose.translation.y;
-        keyframe_pose.position.z = msg->pose.translation.z;
-        keyframe_pose.orientation = msg->pose.rotation;
-        keyframe_poses_.push_back(keyframe_pose);
-
         int frame_id = msg->frame_id;
 
         std::vector<ObservationInfo> new_observations;
+        std::unordered_map<uint64_t, LandmarkInfo> new_landmarks;
         KeyframeInfo new_keyframe(frame_id, R, t, latest_keyframe_timestamp_);
 
         // Need to organize observations and landmarks
@@ -209,14 +197,14 @@ private:
 
             if (associated_landmark_id != -1) {
                 new_obs.landmark_id = associated_landmark_id;
-                auto& landmark_info = landmark_database_.at(associated_landmark_id);  // Use at() instead of []
+                auto& landmark_info = landmark_database_.at(associated_landmark_id);
                 landmark_info.observation_count++;
                 landmark_info.last_seen = msg->header.stamp;
                 landmark_info.observation_ids.push_back(new_obs.observation_id);
             }
             else {
                 // Create new landmark
-                geometry_msgs::msg::Point landmark_pos;
+                cv::Point3f landmark_pos;
                 landmark_pos.x = landmark.position.x;
                 landmark_pos.y = landmark.position.y;
                 landmark_pos.z = landmark.position.z;
@@ -225,7 +213,7 @@ private:
                 LandmarkInfo new_landmark(new_landmark_id, landmark_pos, descriptor, msg->header.stamp);
                 new_landmark.observation_ids.push_back(new_obs.observation_id);
                 
-                landmark_database_.emplace(new_landmark_id, new_landmark);
+                new_landmarks.emplace(new_landmark_id, new_landmark);
                 new_obs.landmark_id = new_landmark_id;
                 
                 RCLCPP_DEBUG(this->get_logger(), "Created new landmark %lu for observation %lu", 
@@ -239,6 +227,11 @@ private:
         
         // Add all new observations to database
         all_observations_.insert(all_observations_.end(), new_observations.begin(), new_observations.end());
+
+        for (const auto& [landmark_id, landmark_info] : new_landmarks) {
+            landmark_database_.emplace(landmark_id, landmark_info);
+            RCLCPP_DEBUG(this->get_logger(), "Added landmark %lu to global map", landmark_id);
+        }
         
         RCLCPP_INFO(this->get_logger(), "Keyframe processed. Total landmarks: %zu, Total observations: %zu", 
                     landmark_database_.size(), all_observations_.size());
