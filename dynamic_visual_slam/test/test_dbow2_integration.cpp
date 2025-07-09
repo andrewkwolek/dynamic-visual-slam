@@ -84,7 +84,7 @@ TEST_F(DBoW2IntegrationTest, BasicDatabaseOperations) {
         package_share_dir = "/home/kwolek/Northwestern/FinalProject/ws/install/dynamic_visual_slam/share/dynamic_visual_slam";
     }
     
-    std::string vocab_path = package_share_dir + "/config/ORBvoc.txt";
+    std::string vocab_path = package_share_dir + "/config/ORBvoc.yml";
     
     bool vocab_loaded = false;
     try {
