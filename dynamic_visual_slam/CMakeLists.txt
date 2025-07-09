@@ -21,11 +21,16 @@ find_package(Ceres REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(dynamic_visual_slam_interfaces REQUIRED)
 
+set(DBoW2_ROOT_DIR "$ENV{HOME}/ws/DBoW2")
+find_path(DBoW2_INCLUDE_DIR NAMES DBoW2/DBoW2.h PATHS ${DBoW2_ROOT_DIR}/include)
+find_library(DBoW2_LIBRARY NAMES DBoW2 PATHS ${DBoW2_ROOT_DIR}/build NO_DEFAULT_PATH)
+
 include_directories(
   include
   ${OpenCV_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIR}
   ${CERES_INCLUDE_DIRS}
+  ${DBoW2_INCLUDE_DIR}
 )
 
 add_executable(frontend src/frontend.cpp)
@@ -59,6 +64,7 @@ ament_target_dependencies(backend
 
 target_link_libraries(backend
   ${CERES_LIBRARIES}
+  ${DBoW2_LIBRARIES}
 )
 
 if(BUILD_TESTING)

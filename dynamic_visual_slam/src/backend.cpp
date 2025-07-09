@@ -478,7 +478,7 @@ private:
             double time_since_seen = (current_time - landmark_info.last_seen).seconds();
             if (landmark_info.observation_count < min_observation_threshold && time_since_seen > max_time_since_seen) {
                 landmarks_to_remove.push_back(landmark_id);
-                RCLCPP_INFO(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %d)", 
+                RCLCPP_DEBUG(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %d)", 
                             landmark_id, landmark_info.observation_count, min_observation_threshold);
             }
         }
