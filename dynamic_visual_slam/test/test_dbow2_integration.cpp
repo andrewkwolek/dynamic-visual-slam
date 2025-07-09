@@ -84,11 +84,11 @@ TEST_F(DBoW2IntegrationTest, BasicDatabaseOperations) {
         package_share_dir = "/home/kwolek/Northwestern/FinalProject/ws/install/dynamic_visual_slam/share/dynamic_visual_slam";
     }
     
-    std::string vocab_path = package_share_dir + "/config/ORBvoc.yml";
+    std::string vocab_path = package_share_dir + "/config/ORBvoc.txt";
     
     bool vocab_loaded = false;
     try {
-        vocabulary.load(vocab_path);
+        vocabulary.loadFromTextFile(vocab_path);
         vocab_loaded = true;
         std::cout << "Loaded vocabulary from: " << vocab_path << std::endl;
     } catch (const std::exception& e) {
