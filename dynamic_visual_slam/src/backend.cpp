@@ -47,7 +47,6 @@ public:
         // Parameters
         min_observations_for_landmark_ = 2;
         max_reprojection_error_ = 2.0;
-        bundle_adjustment_frequency_ = 10; // Run BA every 10 keyframes
         keyframe_count_ = 0;
         camera_params_initialized_ = false;
 
@@ -56,8 +55,8 @@ public:
         descriptor_matcher_ = cv::BFMatcher(cv::NORM_HAMMING, false);
 
         // Association parameters
-        max_descriptor_distance_ = 25.0;  // Hamming distance for ORB
-        max_reprojection_distance_ = 3.0;  // pixels
+        max_descriptor_distance_ = 50.0;  // Hamming distance for ORB
+        max_reprojection_distance_ = 5.0;  // pixels
         min_parallax_angle_ = 5.0;  // degrees
         
         // Initialize landmark map clearing flag
@@ -99,18 +98,6 @@ private:
     int bundle_adjustment_frequency_;
     int keyframe_count_;
 
-    struct LandmarkInfo {
-        uint64_t global_id;
-        cv::Point3f position;
-        cv::Mat descriptor;
-        std::vector<uint64_t> observation_ids;
-        int observation_count;
-        rclcpp::Time last_seen;
-
-        LandmarkInfo(uint64_t id, const cv::Point3f& pos, const cv::Mat& desc, const rclcpp::Time& timestamp)
-            : global_id(id), position(pos), descriptor(desc.clone()), observation_count(1), last_seen(timestamp) {}
-    };
-
     struct ObservationInfo {
         uint64_t observation_id;
         uint64_t landmark_id;
@@ -131,6 +118,146 @@ private:
 
         KeyframeInfo(uint64_t id, const cv::Mat& rotation, const cv::Mat& translation, const rclcpp::Time& stamp)
             : frame_id(id), R(rotation.clone()), t(translation.clone()), timestamp(stamp) {}
+    };
+
+    struct LandmarkInfo {
+        uint64_t global_id;
+        cv::Point3f position;
+        cv::Mat descriptor;
+        std::vector<uint64_t> observation_ids;
+        int observation_count;
+        rclcpp::Time last_seen;
+
+        LandmarkInfo(uint64_t id, const cv::Point3f& pos, const cv::Mat& desc, const rclcpp::Time& timestamp)
+            : global_id(id), position(pos), descriptor(desc.clone()), observation_count(1), last_seen(timestamp) {}
+
+        // Multi-view triangulation method using least squares
+        void triangulate(const std::vector<ObservationInfo>& all_observations,
+                        const std::vector<KeyframeInfo>& keyframes,
+                        double fx, double fy, double cx, double cy) {
+            
+            // Need at least 2 observations for triangulation
+            if (observation_ids.size() < 2) return;
+            
+            std::vector<cv::Point2f> image_points;
+            std::vector<cv::Mat> camera_matrices;
+            
+            // Collect observations and camera poses
+            for (uint64_t obs_id : observation_ids) {
+                // Find the observation
+                auto obs_it = std::find_if(all_observations.begin(), all_observations.end(),
+                    [obs_id](const ObservationInfo& obs) { return obs.observation_id == obs_id; });
+                
+                if (obs_it == all_observations.end()) continue;
+                
+                // Find the corresponding keyframe
+                auto kf_it = std::find_if(keyframes.begin(), keyframes.end(),
+                    [&obs_it](const KeyframeInfo& kf) { return kf.frame_id == obs_it->frame_id; });
+                
+                if (kf_it == keyframes.end()) continue;
+                
+                // Add image point
+                image_points.push_back(obs_it->pixel);
+                
+                // Create camera matrix K[R|t]
+                cv::Mat K = (cv::Mat_<double>(3,3) << 
+                    fx, 0, cx,
+                    0, fy, cy,
+                    0, 0, 1);
+                
+                cv::Mat Rt;
+                cv::hconcat(kf_it->R, kf_it->t, Rt);
+                cv::Mat P = K * Rt;
+                camera_matrices.push_back(P);
+            }
+            
+            // Need at least 2 views
+            if (image_points.size() < 2) return;
+            
+            cv::Point3f new_position;
+            
+            if (image_points.size() == 2) {
+                // Use OpenCV's two-view triangulation
+                cv::Mat point_4d;
+                std::vector<cv::Point2f> pts1 = {image_points[0]};
+                std::vector<cv::Point2f> pts2 = {image_points[1]};
+                
+                cv::triangulatePoints(camera_matrices[0], camera_matrices[1], pts1, pts2, point_4d);
+                
+                // Convert from homogeneous coordinates
+                if (point_4d.at<float>(3, 0) != 0) {
+                    new_position.x = point_4d.at<float>(0, 0) / point_4d.at<float>(3, 0);
+                    new_position.y = point_4d.at<float>(1, 0) / point_4d.at<float>(3, 0);
+                    new_position.z = point_4d.at<float>(2, 0) / point_4d.at<float>(3, 0);
+                } else {
+                    return; // Invalid triangulation
+                }
+            } else {
+                // Multi-view triangulation using least squares (N > 2 views)
+                new_position = triangulateMultiView(image_points, camera_matrices);
+            }
+            
+            // Simple validation: check if depth is positive and reasonable
+            if (new_position.z > 0.3 && new_position.z < 3.0) {
+                // Replace position with fresh triangulation using all observations
+                position = new_position;
+            }
+        }
+
+        // Multi-view triangulation using least squares
+        cv::Point3f triangulateMultiView(const std::vector<cv::Point2f>& image_points,
+                                        const std::vector<cv::Mat>& camera_matrices) {
+            
+            int n_views = image_points.size();
+            
+            // Create the linear system AX = B for least squares
+            cv::Mat A(2 * n_views, 4, CV_64F);
+            
+            for (int i = 0; i < n_views; i++) {
+                cv::Point2f pt = image_points[i];
+                cv::Mat P = camera_matrices[i];
+                
+                // Convert to double precision
+                P.convertTo(P, CV_64F);
+                
+                // For each view, we have two equations:
+                // x * (P31*X + P32*Y + P33*Z + P34) = P11*X + P12*Y + P13*Z + P14
+                // y * (P31*X + P32*Y + P33*Z + P34) = P21*X + P22*Y + P23*Z + P24
+                
+                // Rearranging: (P11 - x*P31)*X + (P12 - x*P32)*Y + (P13 - x*P33)*Z + (P14 - x*P34) = 0
+                //              (P21 - y*P31)*X + (P22 - y*P32)*Y + (P23 - y*P33)*Z + (P24 - y*P34) = 0
+                
+                A.at<double>(2*i, 0) = P.at<double>(0,0) - pt.x * P.at<double>(2,0);
+                A.at<double>(2*i, 1) = P.at<double>(0,1) - pt.x * P.at<double>(2,1);
+                A.at<double>(2*i, 2) = P.at<double>(0,2) - pt.x * P.at<double>(2,2);
+                A.at<double>(2*i, 3) = P.at<double>(0,3) - pt.x * P.at<double>(2,3);
+                
+                A.at<double>(2*i+1, 0) = P.at<double>(1,0) - pt.y * P.at<double>(2,0);
+                A.at<double>(2*i+1, 1) = P.at<double>(1,1) - pt.y * P.at<double>(2,1);
+                A.at<double>(2*i+1, 2) = P.at<double>(1,2) - pt.y * P.at<double>(2,2);
+                A.at<double>(2*i+1, 3) = P.at<double>(1,3) - pt.y * P.at<double>(2,3);
+            }
+            
+            // Solve using SVD: A * X = 0 (homogeneous system)
+            cv::Mat w, u, vt;
+            cv::SVD::compute(A, w, u, vt);
+            
+            // Solution is the last column of V (last row of Vt)
+            cv::Mat X = vt.row(3).t();
+            
+            // Convert from homogeneous coordinates
+            cv::Point3f result;
+            if (std::abs(X.at<double>(3)) > 1e-6) {
+                result.x = X.at<double>(0) / X.at<double>(3);
+                result.y = X.at<double>(1) / X.at<double>(3);
+                result.z = X.at<double>(2) / X.at<double>(3);
+            } else {
+                // Fallback to current position if triangulation fails
+                result = position;
+            }
+            
+            return result;
+        }
     };
 
     std::vector<KeyframeInfo> keyframes_;
@@ -201,6 +328,8 @@ private:
                 landmark_info.observation_count++;
                 landmark_info.last_seen = msg->header.stamp;
                 landmark_info.observation_ids.push_back(new_obs.observation_id);
+
+                landmark_info.triangulate(all_observations_, keyframes_, fx_, fy_, cx_, cy_);
             }
             else {
                 // Create new landmark
