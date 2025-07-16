@@ -7,6 +7,7 @@
 #include <opencv2/video/tracking.hpp>
 #include <opencv2/calib3d.hpp>
 #include <vector>
+#include <memory>
 #include "tf2_ros/static_transform_broadcaster.h"
 #include "tf2_ros/transform_broadcaster.h"
 #include "geometry_msgs/msg/transform_stamped.hpp"
@@ -19,6 +20,7 @@
 #include "dynamic_visual_slam_interfaces/msg/keyframe.hpp"
 #include "dynamic_visual_slam_interfaces/msg/observation.hpp"
 #include "dynamic_visual_slam_interfaces/msg/landmark.hpp"
+#include "dynamic_visual_slam/ORBextractor.hpp"
 
 class Frontend : public rclcpp::Node
 {
@@ -44,7 +46,7 @@ public:
         keyframe_pub_ = this->create_publisher<dynamic_visual_slam_interfaces::msg::Keyframe>("/frontend/keyframe", qos);
         
         // Initialize ORB feature detector
-        orb_detector_ = cv::ORB::create(800);
+        orb_detector_ = std::make_unique<ORB_SLAM3::ORBextractor>(1250, 1.2f, 8, 20, 7);
 
         prev_frame_valid_ = false;
 
@@ -131,7 +133,7 @@ private:
     float depth_cy_;
 
     // ORB Feature detector
-    cv::Ptr<cv::ORB> orb_detector_;
+    std::unique_ptr<ORB_SLAM3::ORBextractor> orb_detector_;
 
     // BF feature matcher
     cv::BFMatcher matcher_;
@@ -498,7 +500,8 @@ private:
                 
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                orb_detector_->detectAndCompute(current_frame_gray, depth_mask, current_keypoints, current_descriptors);
+                std::vector<int> vLappingArea;
+                int num_features = (*orb_detector_)(current_frame_gray, depth_mask, current_keypoints, current_descriptors, vLappingArea);
 
                 RCLCPP_DEBUG(this->get_logger(), "Current keypoints: %zu, Prev keypoints: %zu", 
                         current_keypoints.size(), prev_kps_.size());
@@ -597,7 +600,8 @@ private:
             else {
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                orb_detector_->detectAndCompute(current_frame_gray, depth_mask, current_keypoints, current_descriptors);
+                std::vector<int> vLappingArea;
+                int num_features = (*orb_detector_)(current_frame_gray, depth_mask, current_keypoints, current_descriptors, vLappingArea);
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
