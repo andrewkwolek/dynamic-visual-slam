@@ -68,6 +68,11 @@ add_library(orb_slam3_components
   src/ORBextractor.cpp
 )
 
+ament_target_dependencies(orb_slam3_components
+  rclcpp
+  OpenCV
+)
+
 target_include_directories(orb_slam3_components PUBLIC
   include
   ${OpenCV_INCLUDE_DIRS}
@@ -109,6 +114,7 @@ ament_target_dependencies(backend
 
 target_link_libraries(frontend
   orb_slam3_components
+  ${OpenCV_LIBRARIES}
 )
 
 # Link libraries to backend

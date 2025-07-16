@@ -1139,7 +1139,6 @@ namespace ORB_SLAM3
 
             offset += nkeypointsLevel;
 
-
             float scale = mvScaleFactor[level]; //getScale(level, firstLevel, scaleFactor);
             int i = 0;
             for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),

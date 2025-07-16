@@ -46,7 +46,8 @@ public:
         keyframe_pub_ = this->create_publisher<dynamic_visual_slam_interfaces::msg::Keyframe>("/frontend/keyframe", qos);
         
         // Initialize ORB feature detector
-        orb_detector_ = std::make_unique<ORB_SLAM3::ORBextractor>(1250, 1.2f, 8, 20, 7);
+        orb_extractor_ = std::make_unique<ORB_SLAM3::ORBextractor>(1000, 1.2f, 8, 20, 7);
+        // orb_detector_ = cv::ORB::create(800);
 
         prev_frame_valid_ = false;
 
@@ -133,7 +134,9 @@ private:
     float depth_cy_;
 
     // ORB Feature detector
-    std::unique_ptr<ORB_SLAM3::ORBextractor> orb_detector_;
+    std::vector<int> vLappingArea = {0, 0};
+    std::unique_ptr<ORB_SLAM3::ORBextractor> orb_extractor_;
+    // cv::Ptr<cv::ORB> orb_detector_;
 
     // BF feature matcher
     cv::BFMatcher matcher_;
@@ -501,15 +504,7 @@ private:
                 
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                std::vector<int> vLappingArea;
-                try {
-                    num_features = (*orb_detector_)(current_frame_gray, cv::noArray(), 
-                                                    current_keypoints, current_descriptors, vLappingArea);
-                    RCLCPP_INFO(this->get_logger(), "Successfully extracted %d features", num_features);
-                } catch (const std::exception& e) {
-                    RCLCPP_ERROR(this->get_logger(), "ORB detector exception: %s", e.what());
-                    return;
-                }
+                num_features = (*orb_extractor_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
 
                 RCLCPP_DEBUG(this->get_logger(), "Features found: %d", num_features);
                 RCLCPP_DEBUG(this->get_logger(), "Current keypoints: %zu, Prev keypoints: %zu", 
@@ -609,15 +604,8 @@ private:
             else {
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                std::vector<int> vLappingArea;
-                try {
-                    num_features = (*orb_detector_)(current_frame_gray, cv::noArray(), 
-                                                    current_keypoints, current_descriptors, vLappingArea);
-                    RCLCPP_INFO(this->get_logger(), "Successfully extracted %d features", num_features);
-                } catch (const std::exception& e) {
-                    RCLCPP_ERROR(this->get_logger(), "ORB detector exception: %s", e.what());
-                    return;
-                }
+                RCLCPP_INFO(this->get_logger(), "Running ORB extractor!");
+                num_features = (*orb_extractor_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
