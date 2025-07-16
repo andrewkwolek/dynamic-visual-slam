@@ -64,6 +64,20 @@ include_directories(
   ${DLib_INCLUDE_DIR}
 )
 
+add_library(orb_slam3_components
+  src/ORBextractor.cpp
+)
+
+target_include_directories(orb_slam3_components PUBLIC
+  include
+  ${OpenCV_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+)
+
+target_link_libraries(orb_slam3_components
+  ${OpenCV_LIBRARIES}
+)
+
 add_executable(frontend src/frontend.cpp)
 ament_target_dependencies(frontend 
   rclcpp 
@@ -91,6 +105,10 @@ ament_target_dependencies(backend
   Ceres
   visualization_msgs
   dynamic_visual_slam_interfaces
+)
+
+target_link_libraries(frontend
+  orb_slam3_components
 )
 
 # Link libraries to backend

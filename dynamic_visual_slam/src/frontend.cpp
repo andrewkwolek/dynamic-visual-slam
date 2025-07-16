@@ -501,8 +501,10 @@ private:
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
                 std::vector<int> vLappingArea;
-                int num_features = (*orb_detector_)(current_frame_gray, depth_mask, current_keypoints, current_descriptors, vLappingArea);
+                int num_features = (*orb_detector_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
 
+
+                RCLCPP_DEBUG(this->get_logger(), "Features found: %d", num_features);
                 RCLCPP_DEBUG(this->get_logger(), "Current keypoints: %zu, Prev keypoints: %zu", 
                         current_keypoints.size(), prev_kps_.size());
                 RCLCPP_DEBUG(this->get_logger(), "Current desc rows: %d, Prev desc rows: %d", 
@@ -601,7 +603,9 @@ private:
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
                 std::vector<int> vLappingArea;
-                int num_features = (*orb_detector_)(current_frame_gray, depth_mask, current_keypoints, current_descriptors, vLappingArea);
+                int num_features = (*orb_detector_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
+
+                RCLCPP_DEBUG(this->get_logger(), "Features found: %d", num_features);
 
                 prev_points_.clear();
                 for (const auto& kp : current_keypoints) {
