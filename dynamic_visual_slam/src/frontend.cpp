@@ -99,6 +99,9 @@ public:
         keyframe_id_ = 0;
         frames_since_last_keyframe_ = 0;
         has_last_keyframe_ = false;
+
+        MAX_DEPTH = 3.0f;
+        MIN_DEPTH = 0.3f;
             
         RCLCPP_INFO(this->get_logger(), "Image processor node initialized");
     }
@@ -133,10 +136,13 @@ private:
     float depth_cx_;
     float depth_cy_;
 
+    // Depth filter
+    float MAX_DEPTH;
+    float MIN_DEPTH;
+
     // ORB Feature detector
     std::vector<int> vLappingArea = {0, 0};
     std::unique_ptr<ORB_SLAM3::ORBextractor> orb_extractor_;
-    // cv::Ptr<cv::ORB> orb_detector_;
 
     // BF feature matcher
     cv::BFMatcher matcher_;
@@ -212,6 +218,42 @@ private:
                     "Broadcasted TF - Position: [%.3f, %.3f, %.3f], Quat: [%.3f, %.3f, %.3f, %.3f]",
                     t_ros.at<double>(0), t_ros.at<double>(1), t_ros.at<double>(2),
                     q.x(), q.y(), q.z(), q.w());
+    }
+
+    bool isValidDepth(const cv::Mat& depth_image, int x, int y) {
+        if (x < 0 || y < 0 || x >= depth_image.cols || y >= depth_image.rows) {
+            return false;
+        }
+
+        float depth = depth_image.at<uint16_t>(y, x) * 0.001f;
+
+        if (depth < MIN_DEPTH || depth > MAX_DEPTH || std::isnan(depth) || std::isinf(depth) || depth < 0.0f) {
+            return false;
+        }
+
+        return true;
+    }
+
+    void filterDepth(const std::vector<cv::KeyPoint>& keypoints, const cv::Mat& descriptors, const cv::Mat& depth_image, std::vector<cv::KeyPoint>& filtered_keypoints, cv::Mat& filtered_descriptors) {
+        std::vector<int> original_indices;
+
+        for (int i = 0; i < keypoints.size(); i++) {
+            cv::Point2f pt = keypoints[i].pt;
+            int x = static_cast<int>(std::round(pt.x));
+            int y = static_cast<int>(std::round(pt.y));
+
+            if (isValidDepth(depth_image, x, y)) {
+                filtered_keypoints.push_back(keypoints[i]);
+                original_indices.push_back(i);
+            }
+        }
+
+        if (!filtered_keypoints.empty() && !descriptors.empty()) {
+            filtered_descriptors = cv::Mat(filtered_keypoints.size(), descriptors.cols, descriptors.type());
+            for (int i = 0; i < original_indices.size(); i++) {
+                descriptors.row(original_indices[i]).copyTo(filtered_descriptors.row(i));
+            }
+        }
     }
 
     bool isMotionOutlier(const cv::Mat& R_new, const cv::Mat& t_new) {
@@ -496,15 +538,16 @@ private:
 
             cv::cvtColor(current_frame_rgb, current_frame_gray, cv::COLOR_BGR2GRAY);
 
-            cv::Mat depth_mask;
-            depth_mask = (current_frame_depth > 300) & (current_frame_depth < 3000);
-
             if (prev_frame_valid_) {
                 cv::Mat vis_image = current_frame_rgb.clone();
                 
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
                 num_features = (*orb_extractor_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
+
+                std::vector<cv::KeyPoint> filtered_keypoints;
+                cv::Mat filtered_descriptors;
+                filterDepth(current_keypoints, current_descriptors, current_frame_depth, filtered_keypoints, filtered_descriptors);
 
                 RCLCPP_DEBUG(this->get_logger(), "Features found: %d", num_features);
                 RCLCPP_DEBUG(this->get_logger(), "Current keypoints: %zu, Prev keypoints: %zu", 
@@ -522,7 +565,7 @@ private:
                 }
 
                 std::vector<cv::DMatch> all_matches;
-                matcher_.match(current_descriptors, prev_descriptors_, all_matches);
+                matcher_.match(filtered_descriptors, prev_descriptors_, all_matches);
 
                 RCLCPP_DEBUG(this->get_logger(), "Number of initial matches: %zu", all_matches.size());
 
@@ -541,7 +584,7 @@ private:
                     std::vector<cv::Point2f> prev_pts, curr_pts;
                     for (const auto& match : distance_filtered_matches) {
                         prev_pts.push_back(prev_kps_[match.trainIdx].pt);
-                        curr_pts.push_back(current_keypoints[match.queryIdx].pt);
+                        curr_pts.push_back(filtered_keypoints[match.queryIdx].pt);
                     }
                     
                     std::vector<uchar> inliers_mask;
@@ -565,28 +608,28 @@ private:
                 std::vector<cv::Point2f> prev_matched_pts, curr_matched_pts;
                 for (const auto& match : good_matches) {
                     prev_matched_pts.push_back(prev_kps_[match.trainIdx].pt);
-                    curr_matched_pts.push_back(current_keypoints[match.queryIdx].pt);
-                    cv::Point2f curr_pt = current_keypoints[match.queryIdx].pt;
+                    curr_matched_pts.push_back(filtered_keypoints[match.queryIdx].pt);
+                    cv::Point2f curr_pt = filtered_keypoints[match.queryIdx].pt;
                     cv::circle(vis_image, curr_pt, 3, cv::Scalar(0, 255, 0), 2);
                 }
 
                 std::vector<uchar> status(good_matches.size(), 1);
 
                 if (good_matches.size() >= 5) {
-                    estimateCameraPose(prev_kps_, current_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
+                    estimateCameraPose(prev_kps_, filtered_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
                 }
 
-                if (isKeyframe(current_descriptors, current_keypoints)) {
-                    publishKeyframe(current_keypoints, current_descriptors, current_frame_depth, rgb_msg->header.stamp);
+                if (isKeyframe(filtered_descriptors, filtered_keypoints)) {
+                    publishKeyframe(filtered_keypoints, filtered_descriptors, current_frame_depth, rgb_msg->header.stamp);
                 }
 
                 prev_points_.clear();
-                for (const auto& kp : current_keypoints) {
+                for (const auto& kp : filtered_keypoints) {
                     prev_points_.push_back(kp.pt);
                 }
 
-                prev_descriptors_ = current_descriptors;
-                prev_kps_ = current_keypoints;
+                prev_descriptors_ = filtered_descriptors;
+                prev_kps_ = filtered_keypoints;
                 
                 sensor_msgs::msg::Image::SharedPtr out_msg = cv_bridge::CvImage(rgb_msg->header, "bgr8", vis_image).toImageMsg();
                 image_pub_->publish(*out_msg);
@@ -607,13 +650,17 @@ private:
                 RCLCPP_INFO(this->get_logger(), "Running ORB extractor!");
                 num_features = (*orb_extractor_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
 
+                std::vector<cv::KeyPoint> filtered_keypoints;
+                cv::Mat filtered_descriptors;
+                filterDepth(current_keypoints, current_descriptors, current_frame_depth, filtered_keypoints, filtered_descriptors);
+
                 prev_points_.clear();
-                for (const auto& kp : current_keypoints) {
+                for (const auto& kp : filtered_keypoints) {
                     prev_points_.push_back(kp.pt);
                 }
 
-                prev_descriptors_ = current_descriptors;
-                prev_kps_ = current_keypoints;
+                prev_descriptors_ = filtered_descriptors;
+                prev_kps_ = filtered_keypoints;
 
                 if (latest_rgb_camera_info_) {
                     auto camera_info = *latest_rgb_camera_info_;
