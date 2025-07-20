@@ -40,6 +40,8 @@ public:
         // Create marker publishers for landmark visualization
         landmark_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
             "/backend/landmark_markers", qos);
+        trajectory_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+            "/backend/trajectory", qos);
 
         // BA callback
         ba_timer_ = this->create_wall_timer(std::chrono::seconds(2), std::bind(&Backend::bundleAdjustmentCallback, this));
@@ -58,6 +60,8 @@ public:
         max_descriptor_distance_ = 50.0;  // Hamming distance for ORB
         max_reprojection_distance_ = 5.0;  // pixels
         min_parallax_angle_ = 5.0;  // degrees
+
+        has_prev_keyframe_ = false;
         
         // Initialize landmark map clearing flag
         map_cleared_ = false;
@@ -74,6 +78,7 @@ private:
     // Publishers
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr landmark_markers_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr trajectory_markers_pub_;
     
     // Store latest timestamp for TF broadcasting
     rclcpp::Time latest_keyframe_timestamp_;
@@ -97,6 +102,8 @@ private:
     double max_reprojection_error_;
     int bundle_adjustment_frequency_;
     int keyframe_count_;
+    geometry_msgs::msg::Point prev_keyframe_pos_;
+    bool has_prev_keyframe_;
 
     struct ObservationInfo {
         uint64_t observation_id;
@@ -297,11 +304,15 @@ private:
                     msg->frame_id, msg->landmarks.size(), landmark_database_.size());
 
         latest_keyframe_timestamp_ = msg->header.stamp;
+        int frame_id = msg->frame_id;
 
         cv::Mat R, t;
         extractPoseFromTransform(msg->pose, R, t);
 
-        int frame_id = msg->frame_id;
+        // Visualization
+        broadcastKeyframeTransform(latest_keyframe_timestamp_, R, t, frame_id);
+
+        publishTrajectoryVisualization(t, latest_keyframe_timestamp_, frame_id);
 
         std::vector<ObservationInfo> new_observations;
         std::unordered_map<uint64_t, LandmarkInfo> new_landmarks;
@@ -465,6 +476,120 @@ private:
         publishAllLandmarkMarkers();
         
         ba_running_.store(false);
+    }
+
+    void broadcastKeyframeTransform(const rclcpp::Time& timestamp, const cv::Mat& R, const cv::Mat& t, uint64_t frame_id) {
+        cv::Mat T_opt_to_ros = (cv::Mat_<double>(3,3) << 
+            0,  0,  1,    // Optical Z → ROS X (forward)
+            -1, 0,  0,    // Optical -X → ROS Y (left)
+            0, -1,  0     // Optical -Y → ROS Z (up)
+        );
+        
+        cv::Mat R_ros = T_opt_to_ros * R * T_opt_to_ros.t();
+        cv::Mat t_ros = T_opt_to_ros * t;
+        
+        Eigen::Matrix3d R_eigen;
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                R_eigen(i, j) = R_ros.at<double>(i, j);
+            }
+        }
+        
+        Eigen::Quaterniond q(R_eigen);
+        
+        q.normalize();
+        
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        transform_stamped.header.stamp = timestamp;
+        transform_stamped.header.frame_id = "odom";
+        transform_stamped.child_frame_id = "keyframe_" + frame_id;
+        
+        transform_stamped.transform.translation.x = t_ros.at<double>(0);
+        transform_stamped.transform.translation.y = t_ros.at<double>(1);
+        transform_stamped.transform.translation.z = t_ros.at<double>(2);
+        
+        transform_stamped.transform.rotation.x = q.x();
+        transform_stamped.transform.rotation.y = q.y();
+        transform_stamped.transform.rotation.z = q.z();
+        transform_stamped.transform.rotation.w = q.w();
+        
+        // tf_broadcaster_->sendTransform(transform_stamped);
+        
+        RCLCPP_DEBUG(this->get_logger(), 
+                    "Broadcasted TF - Position: [%.3f, %.3f, %.3f], Quat: [%.3f, %.3f, %.3f, %.3f]",
+                    t_ros.at<double>(0), t_ros.at<double>(1), t_ros.at<double>(2),
+                    q.x(), q.y(), q.z(), q.w());
+    }
+
+    void publishTrajectoryVisualization(const cv::Mat& t, const rclcpp::Time& timestamp, uint64_t frame_id) {
+        visualization_msgs::msg::MarkerArray marker_array;
+
+        cv::Mat T_opt_to_ros = (cv::Mat_<double>(3,3) << 
+            0,  0,  1,    // Optical Z → ROS X (forward)
+            -1, 0,  0,    // Optical -X → ROS Y (left)
+            0, -1,  0     // Optical -Y → ROS Z (up)
+        );
+        
+        cv::Mat t_ros = T_opt_to_ros * t;
+        
+        // Current keyframe position
+        geometry_msgs::msg::Point current_pos;
+        current_pos.x = t_ros.at<double>(0, 0);
+        current_pos.y = t_ros.at<double>(1, 0);
+        current_pos.z = t_ros.at<double>(2, 0);
+        
+        // Keyframe pose marker (small sphere)
+        visualization_msgs::msg::Marker pose_marker;
+        pose_marker.header.frame_id = "world";
+        pose_marker.header.stamp = timestamp;
+        pose_marker.ns = "keyframes";
+        pose_marker.id = frame_id;
+        pose_marker.type = visualization_msgs::msg::Marker::SPHERE;
+        pose_marker.action = visualization_msgs::msg::Marker::ADD;
+        
+        pose_marker.pose.position = current_pos;
+        pose_marker.pose.orientation.w = 1.0;
+        
+        pose_marker.scale.x = 0.005;
+        pose_marker.scale.y = 0.005;
+        pose_marker.scale.z = 0.005;
+        
+        pose_marker.color.r = 1.0;
+        pose_marker.color.g = 0.0;
+        pose_marker.color.b = 0.0;
+        pose_marker.color.a = 1.0;
+        
+        marker_array.markers.push_back(pose_marker);
+        
+        // Draw line to previous keyframe if we have one
+        if (has_prev_keyframe_) {
+            visualization_msgs::msg::Marker line_marker;
+            line_marker.header.frame_id = "world";
+            line_marker.header.stamp = timestamp;
+            line_marker.ns = "trajectory_lines";
+            line_marker.id = frame_id;
+            line_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+            line_marker.action = visualization_msgs::msg::Marker::ADD;
+            
+            line_marker.scale.x = 0.005; // Line width
+            
+            line_marker.color.r = 1.0;
+            line_marker.color.g = 0.0;
+            line_marker.color.b = 0.0;
+            line_marker.color.a = 1.0;
+            
+            // Add previous and current positions
+            line_marker.points.push_back(prev_keyframe_pos_);
+            line_marker.points.push_back(current_pos);
+            
+            marker_array.markers.push_back(line_marker);
+        }
+        
+        // Update previous position
+        prev_keyframe_pos_ = current_pos;
+        has_prev_keyframe_ = true;
+        
+        trajectory_markers_pub_->publish(marker_array);
     }
 
     void updateOptimizedResults(const OptimizationResult& result) {
