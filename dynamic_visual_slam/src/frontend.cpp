@@ -47,7 +47,6 @@ public:
         
         // Initialize ORB feature detector
         orb_extractor_ = std::make_unique<ORB_SLAM3::ORBextractor>(1000, 1.2f, 8, 20, 7);
-        // orb_detector_ = cv::ORB::create(800);
 
         prev_frame_valid_ = false;
 
@@ -525,7 +524,7 @@ private:
             depth_dist_coeffs_.at<double>(0, i) = msg->d[i];
         }
     }
-    
+
     void syncCallback(const sensor_msgs::msg::Image::ConstSharedPtr& rgb_msg, const sensor_msgs::msg::Image::ConstSharedPtr& depth_msg)
     {
         try {
@@ -541,45 +540,43 @@ private:
             if (prev_frame_valid_) {
                 cv::Mat vis_image = current_frame_rgb.clone();
                 
+                // Extract all features
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
                 num_features = (*orb_extractor_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
 
+                // Apply depth filtering to all features
                 std::vector<cv::KeyPoint> filtered_keypoints;
                 cv::Mat filtered_descriptors;
                 filterDepth(current_keypoints, current_descriptors, current_frame_depth, filtered_keypoints, filtered_descriptors);
 
-                RCLCPP_DEBUG(this->get_logger(), "Features found: %d", num_features);
-                RCLCPP_DEBUG(this->get_logger(), "Current keypoints: %zu, Prev keypoints: %zu", 
-                        current_keypoints.size(), prev_kps_.size());
-                RCLCPP_DEBUG(this->get_logger(), "Current desc rows: %d, Prev desc rows: %d", 
-                        current_descriptors.rows, prev_descriptors_.rows);
+                RCLCPP_DEBUG(this->get_logger(), "Features: %d total, %zu depth-filtered", 
+                            num_features, filtered_keypoints.size());
 
-                if (current_keypoints.empty() || prev_kps_.empty() || current_descriptors.empty() || prev_descriptors_.empty()) {
-                    RCLCPP_WARN(this->get_logger(), "No featured detected in one of the frames.");
+                if (filtered_keypoints.empty() || prev_kps_.empty() || filtered_descriptors.empty() || prev_descriptors_.empty()) {
+                    RCLCPP_WARN(this->get_logger(), "No features detected in one of the frames.");
                     current_frame_gray.copyTo(prev_frame_gray_);
                     current_frame_depth.copyTo(prev_frame_depth_);
-                    prev_kps_ = current_keypoints;
-                    prev_descriptors_ = current_descriptors;
+                    prev_kps_ = filtered_keypoints;
+                    prev_descriptors_ = filtered_descriptors.clone();
                     return;
                 }
 
+                // Match against previous frame
                 std::vector<cv::DMatch> all_matches;
                 matcher_.match(filtered_descriptors, prev_descriptors_, all_matches);
 
-                RCLCPP_DEBUG(this->get_logger(), "Number of initial matches: %zu", all_matches.size());
-
+                // Distance filtering
                 std::vector<cv::DMatch> distance_filtered_matches;
                 float max_distance = 50.0f; 
-
                 for (const auto& match : all_matches) {
                     if (match.distance < max_distance) {
                         distance_filtered_matches.push_back(match);
                     }
                 }
 
+                // Geometric filtering
                 std::vector<cv::DMatch> geometrically_consistent_matches;
-
                 if (distance_filtered_matches.size() >= 8) {
                     std::vector<cv::Point2f> prev_pts, curr_pts;
                     for (const auto& match : distance_filtered_matches) {
@@ -596,45 +593,91 @@ private:
                         }
                     }
                     
-                    RCLCPP_DEBUG(this->get_logger(), "Fundamental matrix RANSAC kept %zu/%zu matches", 
-                                geometrically_consistent_matches.size(), distance_filtered_matches.size());
+                    RCLCPP_DEBUG(this->get_logger(), "Matches: %zu initial -> %zu distance -> %zu geometric", 
+                                all_matches.size(), distance_filtered_matches.size(), geometrically_consistent_matches.size());
                 } else {
                     geometrically_consistent_matches = distance_filtered_matches;
                     RCLCPP_WARN(this->get_logger(), "Insufficient matches for RANSAC: %zu", distance_filtered_matches.size());
                 }
+                
+                // Prepare data for backend (culled features)
+                std::vector<cv::KeyPoint> backend_keypoints;
+                cv::Mat backend_descriptors;
+                
+                // Track which features are matched
+                std::set<int> matched_indices;
+                for (const auto& match : geometrically_consistent_matches) {
+                    matched_indices.insert(match.queryIdx);
+                }
+                
+                // Step 1: Add all matched features (highest priority)
+                for (const auto& match : geometrically_consistent_matches) {
+                    int curr_idx = match.queryIdx;
+                    backend_keypoints.push_back(filtered_keypoints[curr_idx]);
+                    
+                    if (backend_descriptors.empty()) {
+                        backend_descriptors = filtered_descriptors.row(curr_idx).clone();
+                    } else {
+                        cv::vconcat(backend_descriptors, filtered_descriptors.row(curr_idx), backend_descriptors);
+                    }
+                }
+                
+                // Step 2: Add high-quality unmatched features for new landmarks
+                std::vector<std::pair<float, int>> unmatched_features;
+                for (int i = 0; i < filtered_keypoints.size(); i++) {
+                    if (matched_indices.find(i) == matched_indices.end()) {
+                        unmatched_features.push_back({filtered_keypoints[i].response, i});
+                    }
+                }
+                
+                // Sort by quality and take best unmatched features
+                std::sort(unmatched_features.begin(), unmatched_features.end(),
+                        [](const auto& a, const auto& b) { return a.first > b.first; });
+                
+                const int MAX_NEW_FEATURES = 50;  // Tunable parameter
+                const float MIN_RESPONSE = 20.0f;
+                int added_new = 0;
+                
+                for (const auto& [response, idx] : unmatched_features) {
+                    if (added_new >= MAX_NEW_FEATURES || response < MIN_RESPONSE) break;
+                    
+                    backend_keypoints.push_back(filtered_keypoints[idx]);
+                    if (backend_descriptors.empty()) {
+                        backend_descriptors = filtered_descriptors.row(idx).clone();
+                    } else {
+                        cv::vconcat(backend_descriptors, filtered_descriptors.row(idx), backend_descriptors);
+                    }
+                    added_new++;
+                }
+                
+                RCLCPP_INFO(this->get_logger(), 
+                        "Culling: %zu total -> %zu depth-filtered -> %zu matched -> %d new -> %zu backend",
+                        current_keypoints.size(), filtered_keypoints.size(), 
+                        geometrically_consistent_matches.size(), added_new, backend_keypoints.size());
 
-                std::vector<cv::DMatch> good_matches = geometrically_consistent_matches;
-
-                std::vector<cv::Point2f> prev_matched_pts, curr_matched_pts;
-                for (const auto& match : good_matches) {
-                    prev_matched_pts.push_back(prev_kps_[match.trainIdx].pt);
-                    curr_matched_pts.push_back(filtered_keypoints[match.queryIdx].pt);
+                // Visualization - draw matched features
+                for (const auto& match : geometrically_consistent_matches) {
                     cv::Point2f curr_pt = filtered_keypoints[match.queryIdx].pt;
                     cv::circle(vis_image, curr_pt, 3, cv::Scalar(0, 255, 0), 2);
                 }
 
-                std::vector<uchar> status(good_matches.size(), 1);
-
-                if (good_matches.size() >= 5) {
-                    estimateCameraPose(prev_kps_, filtered_keypoints, good_matches, prev_frame_depth_, rgb_msg->header.stamp);
+                // Estimate pose using all geometric matches (for frontend tracking)
+                if (geometrically_consistent_matches.size() >= 5) {
+                    estimateCameraPose(prev_kps_, filtered_keypoints, geometrically_consistent_matches, prev_frame_depth_, rgb_msg->header.stamp);
                 }
 
-                if (isKeyframe(filtered_descriptors, filtered_keypoints)) {
-                    publishKeyframe(filtered_keypoints, filtered_descriptors, current_frame_depth, rgb_msg->header.stamp);
+                // Send culled features to backend
+                if (isKeyframe(backend_descriptors, backend_keypoints)) {
+                    publishKeyframe(backend_keypoints, backend_descriptors, current_frame_depth, rgb_msg->header.stamp);
                 }
 
-                prev_points_.clear();
-                for (const auto& kp : filtered_keypoints) {
-                    prev_points_.push_back(kp.pt);
-                }
-
-                prev_descriptors_ = filtered_descriptors;
+                // Update for next frame (keep ALL depth-filtered features for matching)
                 prev_kps_ = filtered_keypoints;
+                prev_descriptors_ = filtered_descriptors.clone();
                 
                 sensor_msgs::msg::Image::SharedPtr out_msg = cv_bridge::CvImage(rgb_msg->header, "bgr8", vis_image).toImageMsg();
                 image_pub_->publish(*out_msg);
 
-                // Publish camera info if available
                 if (latest_rgb_camera_info_) {
                     auto camera_info = *latest_rgb_camera_info_;
                     camera_info.header = rgb_msg->header;
@@ -645,22 +688,21 @@ private:
                 current_frame_depth.copyTo(prev_frame_depth_);
             } 
             else {
+                // First frame - extract and send all depth-filtered features
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                RCLCPP_INFO(this->get_logger(), "Running ORB extractor!");
+                RCLCPP_INFO(this->get_logger(), "Running ORB extractor for first frame!");
                 num_features = (*orb_extractor_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
 
                 std::vector<cv::KeyPoint> filtered_keypoints;
                 cv::Mat filtered_descriptors;
                 filterDepth(current_keypoints, current_descriptors, current_frame_depth, filtered_keypoints, filtered_descriptors);
 
-                prev_points_.clear();
-                for (const auto& kp : filtered_keypoints) {
-                    prev_points_.push_back(kp.pt);
-                }
+                // For first frame, send all filtered features to backend
+                publishKeyframe(filtered_keypoints, filtered_descriptors, current_frame_depth, rgb_msg->header.stamp);
 
-                prev_descriptors_ = filtered_descriptors;
                 prev_kps_ = filtered_keypoints;
+                prev_descriptors_ = filtered_descriptors.clone();
 
                 if (latest_rgb_camera_info_) {
                     auto camera_info = *latest_rgb_camera_info_;

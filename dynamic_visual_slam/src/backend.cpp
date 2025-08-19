@@ -63,9 +63,6 @@ public:
 
         has_prev_keyframe_ = false;
         
-        // Initialize landmark map clearing flag
-        map_cleared_ = false;
-        
         RCLCPP_INFO(this->get_logger(), "Backend initialized - keeping all landmarks for mapping");
     }
 
@@ -93,9 +90,6 @@ private:
 
     // Timer for bundle adjustment
     rclcpp::TimerBase::SharedPtr ba_timer_;
-
-    // Map management
-    bool map_cleared_;
     
     // Parameters
     int min_observations_for_landmark_;
@@ -774,16 +768,6 @@ private:
     
     void publishAllLandmarkMarkers() {
         visualization_msgs::msg::MarkerArray marker_array;
-        
-        if (!map_cleared_) {
-            visualization_msgs::msg::Marker delete_all_marker;
-            delete_all_marker.header.frame_id = "world";
-            delete_all_marker.header.stamp = latest_keyframe_timestamp_;
-            delete_all_marker.ns = "landmarks";
-            delete_all_marker.action = visualization_msgs::msg::Marker::DELETEALL;
-            marker_array.markers.push_back(delete_all_marker);
-            map_cleared_ = true;
-        }
         
         // Transformation matrix from optical to ROS for visualization
         cv::Mat T_opt_to_ros = (cv::Mat_<double>(3,3) << 
