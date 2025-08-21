@@ -236,7 +236,7 @@ private:
     void filterDepth(const std::vector<cv::KeyPoint>& keypoints, const cv::Mat& descriptors, const cv::Mat& depth_image, std::vector<cv::KeyPoint>& filtered_keypoints, cv::Mat& filtered_descriptors) {
         std::vector<int> original_indices;
 
-        for (int i = 0; i < keypoints.size(); i++) {
+        for (size_t i = 0; i < keypoints.size(); i++) {
             cv::Point2f pt = keypoints[i].pt;
             int x = static_cast<int>(std::round(pt.x));
             int y = static_cast<int>(std::round(pt.y));
@@ -249,7 +249,7 @@ private:
 
         if (!filtered_keypoints.empty() && !descriptors.empty()) {
             filtered_descriptors = cv::Mat(filtered_keypoints.size(), descriptors.cols, descriptors.type());
-            for (int i = 0; i < original_indices.size(); i++) {
+            for (size_t i = 0; i < original_indices.size(); i++) {
                 descriptors.row(original_indices[i]).copyTo(filtered_descriptors.row(i));
             }
         }
@@ -624,7 +624,7 @@ private:
                 
                 // Step 2: Add high-quality unmatched features for new landmarks
                 std::vector<std::pair<float, int>> unmatched_features;
-                for (int i = 0; i < filtered_keypoints.size(); i++) {
+                for (size_t i = 0; i < filtered_keypoints.size(); i++) {
                     if (matched_indices.find(i) == matched_indices.end()) {
                         unmatched_features.push_back({filtered_keypoints[i].response, i});
                     }
@@ -650,7 +650,7 @@ private:
                     added_new++;
                 }
                 
-                RCLCPP_INFO(this->get_logger(), 
+                RCLCPP_DEBUG(this->get_logger(), 
                         "Culling: %zu total -> %zu depth-filtered -> %zu matched -> %d new -> %zu backend",
                         current_keypoints.size(), filtered_keypoints.size(), 
                         geometrically_consistent_matches.size(), added_new, backend_keypoints.size());

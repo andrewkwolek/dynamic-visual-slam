@@ -59,7 +59,7 @@ public:
         // Association parameters
         max_descriptor_distance_ = 50.0;  // Hamming distance for ORB
         max_reprojection_distance_ = 5.0;  // pixels
-        min_parallax_angle_ = 5.0;  // degrees
+        min_parallax_ratio_ = 0.02;
 
         has_prev_keyframe_ = false;
         
@@ -193,9 +193,6 @@ private:
                 } else {
                     return; // Invalid triangulation
                 }
-            } else {
-                // Multi-view triangulation using least squares (N > 2 views)
-                new_position = triangulateMultiView(image_points, camera_matrices);
             }
             
             // Simple validation: check if depth is positive and reasonable
@@ -203,61 +200,6 @@ private:
                 // Replace position with fresh triangulation using all observations
                 position = new_position;
             }
-        }
-
-        // Multi-view triangulation using least squares
-        cv::Point3f triangulateMultiView(const std::vector<cv::Point2f>& image_points,
-                                        const std::vector<cv::Mat>& camera_matrices) {
-            
-            int n_views = image_points.size();
-            
-            // Create the linear system AX = B for least squares
-            cv::Mat A(2 * n_views, 4, CV_64F);
-            
-            for (int i = 0; i < n_views; i++) {
-                cv::Point2f pt = image_points[i];
-                cv::Mat P = camera_matrices[i];
-                
-                // Convert to double precision
-                P.convertTo(P, CV_64F);
-                
-                // For each view, we have two equations:
-                // x * (P31*X + P32*Y + P33*Z + P34) = P11*X + P12*Y + P13*Z + P14
-                // y * (P31*X + P32*Y + P33*Z + P34) = P21*X + P22*Y + P23*Z + P24
-                
-                // Rearranging: (P11 - x*P31)*X + (P12 - x*P32)*Y + (P13 - x*P33)*Z + (P14 - x*P34) = 0
-                //              (P21 - y*P31)*X + (P22 - y*P32)*Y + (P23 - y*P33)*Z + (P24 - y*P34) = 0
-                
-                A.at<double>(2*i, 0) = P.at<double>(0,0) - pt.x * P.at<double>(2,0);
-                A.at<double>(2*i, 1) = P.at<double>(0,1) - pt.x * P.at<double>(2,1);
-                A.at<double>(2*i, 2) = P.at<double>(0,2) - pt.x * P.at<double>(2,2);
-                A.at<double>(2*i, 3) = P.at<double>(0,3) - pt.x * P.at<double>(2,3);
-                
-                A.at<double>(2*i+1, 0) = P.at<double>(1,0) - pt.y * P.at<double>(2,0);
-                A.at<double>(2*i+1, 1) = P.at<double>(1,1) - pt.y * P.at<double>(2,1);
-                A.at<double>(2*i+1, 2) = P.at<double>(1,2) - pt.y * P.at<double>(2,2);
-                A.at<double>(2*i+1, 3) = P.at<double>(1,3) - pt.y * P.at<double>(2,3);
-            }
-            
-            // Solve using SVD: A * X = 0 (homogeneous system)
-            cv::Mat w, u, vt;
-            cv::SVD::compute(A, w, u, vt);
-            
-            // Solution is the last column of V (last row of Vt)
-            cv::Mat X = vt.row(3).t();
-            
-            // Convert from homogeneous coordinates
-            cv::Point3f result;
-            if (std::abs(X.at<double>(3)) > 1e-6) {
-                result.x = X.at<double>(0) / X.at<double>(3);
-                result.y = X.at<double>(1) / X.at<double>(3);
-                result.z = X.at<double>(2) / X.at<double>(3);
-            } else {
-                // Fallback to current position if triangulation fails
-                result = position;
-            }
-            
-            return result;
         }
     };
 
@@ -271,7 +213,7 @@ private:
     // Parameters for association
     double max_descriptor_distance_;
     double max_reprojection_distance_;
-    double min_parallax_angle_;
+    double min_parallax_ratio_;
 
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         if (!camera_params_initialized_) {
@@ -304,9 +246,9 @@ private:
         extractPoseFromTransform(msg->pose, R, t);
 
         // Visualization
-        broadcastKeyframeTransform(latest_keyframe_timestamp_, R, t, frame_id);
+        // broadcastKeyframeTransform(latest_keyframe_timestamp_, R, t, frame_id);
 
-        publishTrajectoryVisualization(t, latest_keyframe_timestamp_, frame_id);
+        // publishTrajectoryVisualization(t, latest_keyframe_timestamp_, frame_id);
 
         std::vector<ObservationInfo> new_observations;
         std::unordered_map<uint64_t, LandmarkInfo> new_landmarks;
