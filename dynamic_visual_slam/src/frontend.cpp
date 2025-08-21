@@ -102,7 +102,7 @@ public:
         MAX_DEPTH = 3.0f;
         MIN_DEPTH = 0.3f;
             
-        RCLCPP_INFO(this->get_logger(), "Image processor node initialized");
+        RCLCPP_DEBUG(this->get_logger(), "Image processor node initialized");
     }
 
 private:
@@ -691,7 +691,7 @@ private:
                 // First frame - extract and send all depth-filtered features
                 std::vector<cv::KeyPoint> current_keypoints;
                 cv::Mat current_descriptors;
-                RCLCPP_INFO(this->get_logger(), "Running ORB extractor for first frame!");
+                RCLCPP_DEBUG(this->get_logger(), "Running ORB extractor for first frame!");
                 num_features = (*orb_extractor_)(current_frame_gray, cv::noArray(), current_keypoints, current_descriptors, vLappingArea);
 
                 std::vector<cv::KeyPoint> filtered_keypoints;

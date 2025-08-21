@@ -63,7 +63,7 @@ public:
 
         has_prev_keyframe_ = false;
         
-        RCLCPP_INFO(this->get_logger(), "Backend initialized - keeping all landmarks for mapping");
+        RCLCPP_DEBUG(this->get_logger(), "Backend initialized - keeping all landmarks for mapping");
     }
 
 private:
@@ -301,7 +301,7 @@ private:
             bundle_adjuster_ = std::make_unique<SlidingWindowBA>(10, fx_, fy_, cx_, cy_);
             camera_params_initialized_ = true;
             
-            RCLCPP_INFO(this->get_logger(), "Camera parameters initialized: fx=%.1f, fy=%.1f, cx=%.1f, cy=%.1f", 
+            RCLCPP_DEBUG(this->get_logger(), "Camera parameters initialized: fx=%.1f, fy=%.1f, cx=%.1f, cy=%.1f", 
                         fx_, fy_, cx_, cy_);
         }
     }
@@ -312,7 +312,7 @@ private:
             return;
         }
         
-        RCLCPP_INFO(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
+        RCLCPP_DEBUG(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
                     msg->frame_id, msg->landmarks.size(), landmark_database_.size());
 
         latest_keyframe_timestamp_ = msg->header.stamp;
@@ -385,7 +385,7 @@ private:
             RCLCPP_DEBUG(this->get_logger(), "Added landmark %lu to global map", landmark_id);
         }
         
-        RCLCPP_INFO(this->get_logger(), "Keyframe processed. Total landmarks: %zu, Total observations: %zu", 
+        RCLCPP_DEBUG(this->get_logger(), "Keyframe processed. Total landmarks: %zu, Total observations: %zu", 
                     landmark_database_.size(), all_observations_.size());
 
         publishAllLandmarkMarkers();
@@ -393,14 +393,14 @@ private:
 
     void bundleAdjustmentCallback() {
         if (ba_running_.load()) {
-            RCLCPP_INFO(this->get_logger(), "Bundle adjustment already running, skipping this cycle");
+            RCLCPP_DEBUG(this->get_logger(), "Bundle adjustment already running, skipping this cycle");
             return;
         }
 
         std::lock_guard<std::mutex> lock(keyframes_mutex_);
         
         if (keyframes_.size() < 2) {
-            RCLCPP_INFO(this->get_logger(), "Not enough keyframes for BA: %zu", keyframes_.size());
+            RCLCPP_DEBUG(this->get_logger(), "Not enough keyframes for BA: %zu", keyframes_.size());
             return;
         }
 
@@ -415,7 +415,7 @@ private:
             keyframes_.end()
         );
         
-        RCLCPP_INFO(this->get_logger(), "Starting bundle adjustment with %d keyframes (window %d-%zu)", 
+        RCLCPP_DEBUG(this->get_logger(), "Starting bundle adjustment with %d keyframes (window %d-%zu)", 
                     window_size, start_idx, keyframes_.size() - 1);
         
         // Extract KeyframeData vector for BA
@@ -454,7 +454,7 @@ private:
                                         false); // Don't fix landmarks
         }
         
-        RCLCPP_INFO(this->get_logger(), "Window contains %zu landmarks and %zu observations", 
+        RCLCPP_DEBUG(this->get_logger(), "Window contains %zu landmarks and %zu observations", 
                     window_landmarks.size(), window_observations.size());
         
         // Run bundle adjustment directly in the timer callback
@@ -471,7 +471,7 @@ private:
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         
         if (result.success) {
-            RCLCPP_INFO(this->get_logger(), 
+            RCLCPP_DEBUG(this->get_logger(), 
                         "Bundle adjustment converged in %d iterations, final cost: %.6f, time: %ld ms",
                         result.iterations_completed, result.final_cost, duration.count());
             
@@ -649,7 +649,7 @@ private:
             }
         }
 
-        RCLCPP_INFO(this->get_logger(), "Matches: %ld", candidates.size());
+        RCLCPP_DEBUG(this->get_logger(), "Matches: %ld", candidates.size());
 
         if (candidates.empty()) {
             RCLCPP_DEBUG(this->get_logger(), "No matches, new landmark!");
@@ -675,7 +675,7 @@ private:
         }
 
         if (best_landmark_id != -1) {
-            RCLCPP_INFO(this->get_logger(), "Found association with reprojection error: %.2f pixels", best_reprojection_error);
+            RCLCPP_DEBUG(this->get_logger(), "Found association with reprojection error: %.2f pixels", best_reprojection_error);
         }
 
         return best_landmark_id;
@@ -776,13 +776,13 @@ private:
         }
         
         if (removed_landmarks > 0) {
-            RCLCPP_INFO(this->get_logger(), 
+            RCLCPP_DEBUG(this->get_logger(), 
                         "Landmark pruning completed: removed %d landmarks and %d observations. "
                         "Remaining landmarks: %zu, observations: %zu", 
                         removed_landmarks, removed_observations,
                         landmark_database_.size(), all_observations_.size());
         } else {
-            RCLCPP_INFO(this->get_logger(), "Landmark pruning: no landmarks removed");
+            RCLCPP_DEBUG(this->get_logger(), "Landmark pruning: no landmarks removed");
         }
     }
     
