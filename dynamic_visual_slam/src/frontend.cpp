@@ -635,7 +635,7 @@ private:
                         [](const auto& a, const auto& b) { return a.first > b.first; });
                 
                 const int MAX_NEW_FEATURES = 50;  // Tunable parameter
-                const float MIN_RESPONSE = 20.0f;
+                const float MIN_RESPONSE = 50.0f;
                 int added_new = 0;
                 
                 for (const auto& [response, idx] : unmatched_features) {
