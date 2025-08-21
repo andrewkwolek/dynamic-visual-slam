@@ -132,8 +132,6 @@ private:
         LandmarkInfo(uint64_t id, const cv::Point3f& pos, const cv::Mat& desc, const rclcpp::Time& timestamp)
             : global_id(id), position(pos), descriptor(desc.clone()), observation_count(1), last_seen(timestamp) {}
 
-        // Multi-view triangulation method using least squares
-        // Multi-view triangulation method with parallax validation
         void triangulate(const std::vector<ObservationInfo>& all_observations,
                         const std::vector<KeyframeInfo>& keyframes,
                         double fx, double fy, double cx, double cy) {
@@ -145,24 +143,19 @@ private:
             std::vector<cv::Mat> camera_matrices;
             std::vector<cv::Mat> camera_centers;
             
-            // Collect observations and camera poses
             for (uint64_t obs_id : observation_ids) {
-                // Find the observation
                 auto obs_it = std::find_if(all_observations.begin(), all_observations.end(),
                     [obs_id](const ObservationInfo& obs) { return obs.observation_id == obs_id; });
                 
                 if (obs_it == all_observations.end()) continue;
                 
-                // Find the corresponding keyframe
                 auto kf_it = std::find_if(keyframes.begin(), keyframes.end(),
                     [&obs_it](const KeyframeInfo& kf) { return kf.frame_id == obs_it->frame_id; });
                 
                 if (kf_it == keyframes.end()) continue;
                 
-                // Add image point
                 image_points.push_back(obs_it->pixel);
                 
-                // Create camera matrix K[R|t]
                 cv::Mat K = (cv::Mat_<double>(3,3) << 
                     fx, 0, cx,
                     0, fy, cy,
@@ -173,26 +166,20 @@ private:
                 cv::Mat P = K * Rt;
                 camera_matrices.push_back(P);
                 
-                // Store camera center for parallax calculation
-                // Camera center in world coordinates: C = -R^T * t
                 cv::Mat camera_center = -kf_it->R.t() * kf_it->t;
                 camera_centers.push_back(camera_center);
             }
             
-            // Need at least 2 views
             if (image_points.size() < 2) return;
             
-            // Check parallax between the two views with maximum baseline
             double max_parallax_angle = 0.0;
             int best_view1 = -1, best_view2 = -1;
             
             for (size_t i = 0; i < camera_centers.size(); i++) {
                 for (size_t j = i + 1; j < camera_centers.size(); j++) {
-                    // Calculate baseline distance
                     cv::Mat baseline = camera_centers[i] - camera_centers[j];
                     double baseline_length = cv::norm(baseline);
                     
-                    // Calculate approximate depth to current landmark position
                     cv::Mat landmark_pos = (cv::Mat_<double>(3,1) << position.x, position.y, position.z);
                     cv::Mat to_landmark1 = landmark_pos - camera_centers[i];
                     cv::Mat to_landmark2 = landmark_pos - camera_centers[j];
@@ -211,19 +198,15 @@ private:
                 }
             }
             
-            // Minimum parallax threshold (in radians)
-            // 1 degree = 0.0175 radians, 2 degrees = 0.0349 radians
-            const double MIN_PARALLAX_ANGLE = 0.0175; // 1 degree
+            const double MIN_PARALLAX_ANGLE = 0.0175 * 5;
             
             if (max_parallax_angle < MIN_PARALLAX_ANGLE) {
-                // Insufficient parallax for reliable triangulation
                 return;
             }
             
             cv::Point3f new_position;
             
             if (image_points.size() == 2) {
-                // Use OpenCV's two-view triangulation with best baseline
                 cv::Mat point_4d;
                 std::vector<cv::Point2f> pts1 = {image_points[best_view1]};
                 std::vector<cv::Point2f> pts2 = {image_points[best_view2]};
@@ -231,48 +214,40 @@ private:
                 cv::triangulatePoints(camera_matrices[best_view1], camera_matrices[best_view2], 
                                     pts1, pts2, point_4d);
                 
-                // Convert from homogeneous coordinates
                 if (point_4d.at<float>(3, 0) != 0) {
                     new_position.x = point_4d.at<float>(0, 0) / point_4d.at<float>(3, 0);
                     new_position.y = point_4d.at<float>(1, 0) / point_4d.at<float>(3, 0);
                     new_position.z = point_4d.at<float>(2, 0) / point_4d.at<float>(3, 0);
                 } else {
-                    return; // Invalid triangulation
+                    return;
                 }
             } else {
-                // For multiple views, use DLT (Direct Linear Transform) method
-                // This is more robust for multiple observations
                 cv::Mat A(2 * image_points.size(), 4, CV_64F);
                 
                 for (size_t i = 0; i < image_points.size(); i++) {
                     cv::Mat P = camera_matrices[i];
                     cv::Point2f pt = image_points[i];
                     
-                    // Build the A matrix for DLT
                     for (int j = 0; j < 4; j++) {
                         A.at<double>(2*i, j) = pt.x * P.at<double>(2, j) - P.at<double>(0, j);
                         A.at<double>(2*i+1, j) = pt.y * P.at<double>(2, j) - P.at<double>(1, j);
                     }
                 }
                 
-                // Solve using SVD
                 cv::Mat U, D, Vt;
                 cv::SVD::compute(A, D, U, Vt, cv::SVD::MODIFY_A);
                 
-                // The solution is the last column of V (last row of Vt)
                 cv::Mat X = Vt.row(3).t();
                 
-                // Convert from homogeneous coordinates
                 if (X.at<double>(3) != 0) {
                     new_position.x = X.at<double>(0) / X.at<double>(3);
                     new_position.y = X.at<double>(1) / X.at<double>(3);
                     new_position.z = X.at<double>(2) / X.at<double>(3);
                 } else {
-                    return; // Invalid triangulation
+                    return;
                 }
             }
             
-            // Additional validation: check reprojection errors
             double total_reprojection_error = 0.0;
             int valid_reprojections = 0;
             
@@ -280,7 +255,7 @@ private:
                 cv::Mat point_3d = (cv::Mat_<double>(4,1) << new_position.x, new_position.y, new_position.z, 1.0);
                 cv::Mat projected = camera_matrices[i] * point_3d;
                 
-                if (projected.at<double>(2) > 0) { // Point in front of camera
+                if (projected.at<double>(2) > 0) {
                     cv::Point2f reproj_pt(projected.at<double>(0) / projected.at<double>(2),
                                         projected.at<double>(1) / projected.at<double>(2));
                     
@@ -290,18 +265,15 @@ private:
                 }
             }
             
-            // Check if reprojection error is reasonable
-            const double MAX_REPROJECTION_ERROR = 2.0; // pixels
+            const double MAX_REPROJECTION_ERROR = 2.0;
             if (valid_reprojections > 0) {
                 double avg_reprojection_error = total_reprojection_error / valid_reprojections;
                 if (avg_reprojection_error > MAX_REPROJECTION_ERROR) {
-                    return; // Poor triangulation quality
+                    return;
                 }
             }
             
-            // Final validation: check if depth is reasonable
-            if (new_position.z > 0.1 && new_position.z < 10.0) { // Reasonable depth range
-                // Replace position with fresh triangulation using best observations
+            if (new_position.z > 0.1 && new_position.z < 10.0) {
                 position = new_position;
             }
         }
@@ -677,6 +649,8 @@ private:
             }
         }
 
+        RCLCPP_INFO(this->get_logger(), "Matches: %ld", candidates.size());
+
         if (candidates.empty()) {
             RCLCPP_DEBUG(this->get_logger(), "No matches, new landmark!");
             return -1;
@@ -701,7 +675,7 @@ private:
         }
 
         if (best_landmark_id != -1) {
-            RCLCPP_DEBUG(this->get_logger(), "Found association with reprojection error: %.2f pixels", best_reprojection_error);
+            RCLCPP_INFO(this->get_logger(), "Found association with reprojection error: %.2f pixels", best_reprojection_error);
         }
 
         return best_landmark_id;
