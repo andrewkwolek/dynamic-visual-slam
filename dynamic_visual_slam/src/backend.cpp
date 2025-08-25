@@ -13,6 +13,9 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "tf2/LinearMath/Quaternion.hpp"
 #include "yolo_msgs/msg/detection_array.hpp"
+#include "message_filters/subscriber.h"
+#include "message_filters/synchronizer.h"
+#include "message_filters/sync_policies/approximate_time.h"
 #include <Eigen/Geometry>
 
 class Backend : public rclcpp::Node 
@@ -26,11 +29,17 @@ public:
         // These will be updated when we receive camera info
         bundle_adjuster_ = std::make_unique<SlidingWindowBA>(10, 640.0, 480.0, 320.0, 240.0);
         
-        keyframe_sub_ = this->create_subscription<dynamic_visual_slam_interfaces::msg::Keyframe>(
-            "/frontend/keyframe", qos, 
-            std::bind(&Backend::keyframeCallback, this, std::placeholders::_1));
-        tracking_sub_ = this->create_subscription<yolo_msgs::msg::DetectionArray>("/yolo/tracking", qos, std::bind(&Backend::trackingCallback, this, std::placeholders::_1));
-            
+        // keyframe_sub_ = this->create_subscription<dynamic_visual_slam_interfaces::msg::Keyframe>(
+        //     "/frontend/keyframe", qos, 
+        //     std::bind(&Backend::keyframeCallback, this, std::placeholders::_1));
+        // tracking_sub_ = this->create_subscription<yolo_msgs::msg::DetectionArray>("/yolo/tracking", qos, std::bind(&Backend::trackingCallback, this, std::placeholders::_1));
+
+        tracking_sub_.subscribe(this, "/yolo/tracking", qos.get_rmw_qos_profile());
+        keyframe_sub_.subscribe(this, "/frontend/keyframe", qos.get_rmw_qos_profile());
+
+        sync_ = std::make_shared<message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<yolo_msgs::msg::DetectionArray, dynamic_visual_slam_interfaces::msg::Keyframe>>>(message_filters::sync_policies::ApproximateTime<yolo_msgs::msg::DetectionArray, dynamic_visual_slam_interfaces::msg::Keyframe>(10), tracking_sub_, keyframe_sub_);
+        sync_->registerCallback(std::bind(&Backend::syncCallback, this, std::placeholders::_1, std::placeholders::_2));
+        
         // Subscribe to camera info to get proper camera parameters
         camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
             "/camera/camera/color/camera_info", qos,
@@ -70,10 +79,16 @@ public:
 
 private:
     std::unique_ptr<SlidingWindowBA> bundle_adjuster_;
+
+    message_filters::Subscriber<yolo_msgs::msg::DetectionArray> tracking_sub_;
+    message_filters::Subscriber<dynamic_visual_slam_interfaces::msg::Keyframe> keyframe_sub_;
+
+    // Message filter synchronizer
+    std::shared_ptr<message_filters::Synchronizer<message_filters::sync_policies::ApproximateTime<yolo_msgs::msg::DetectionArray, dynamic_visual_slam_interfaces::msg::Keyframe>>> sync_;
     
-    rclcpp::Subscription<dynamic_visual_slam_interfaces::msg::Keyframe>::SharedPtr keyframe_sub_;
+    // rclcpp::Subscription<dynamic_visual_slam_interfaces::msg::Keyframe>::SharedPtr keyframe_sub_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
-    rclcpp::Subscription<yolo_msgs::msg::DetectionArray>::SharedPtr tracking_sub_;
+    // rclcpp::Subscription<yolo_msgs::msg::DetectionArray>::SharedPtr tracking_sub_;
     
     // Publishers
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -309,20 +324,20 @@ private:
         }
     }
 
-    void keyframeCallback(const dynamic_visual_slam_interfaces::msg::Keyframe::ConstSharedPtr& msg) {
+    void syncCallback(const yolo_msgs::msg::DetectionArray::ConstSharedPtr& tracking_msg, const dynamic_visual_slam_interfaces::msg::Keyframe::ConstSharedPtr& kf_msg) {
         if (!camera_params_initialized_) {
             RCLCPP_WARN(this->get_logger(), "Camera parameters not yet initialized, skipping keyframe");
             return;
         }
         
         RCLCPP_DEBUG(this->get_logger(), "Processing keyframe %lu with %zu landmarks (Total map size: %zu)", 
-                    msg->frame_id, msg->landmarks.size(), landmark_database_.size());
+                    kf_msg->frame_id, kf_msg->landmarks.size(), landmark_database_.size());
 
-        latest_keyframe_timestamp_ = msg->header.stamp;
-        int frame_id = msg->frame_id;
+        latest_keyframe_timestamp_ = kf_msg->header.stamp;
+        int frame_id = kf_msg->frame_id;
 
         cv::Mat R, t;
-        extractPoseFromTransform(msg->pose, R, t);
+        extractPoseFromTransform(kf_msg->pose, R, t);
 
         // Visualization
         // broadcastKeyframeTransform(latest_keyframe_timestamp_, R, t, frame_id);
@@ -334,9 +349,9 @@ private:
         KeyframeInfo new_keyframe(frame_id, R, t, latest_keyframe_timestamp_);
 
         // Need to organize observations and landmarks
-        for (size_t i = 0; i < msg->observations.size(); i++) {
-            const auto& obs = msg->observations[i];
-            const auto& landmark = msg->landmarks[i];
+        for (size_t i = 0; i < kf_msg->observations.size(); i++) {
+            const auto& obs = kf_msg->observations[i];
+            const auto& landmark = kf_msg->landmarks[i];
 
             cv::Mat descriptor(1, obs.descriptor.size(), CV_8U);
             std::memcpy(descriptor.data, obs.descriptor.data(), obs.descriptor.size());
@@ -352,7 +367,7 @@ private:
                 new_obs.landmark_id = associated_landmark_id;
                 auto& landmark_info = landmark_database_.at(associated_landmark_id);
                 landmark_info.observation_count++;
-                landmark_info.last_seen = msg->header.stamp;
+                landmark_info.last_seen = kf_msg->header.stamp;
                 landmark_info.observation_ids.push_back(new_obs.observation_id);
 
                 landmark_info.triangulate(all_observations_, keyframes_, fx_, fy_, cx_, cy_);
@@ -365,7 +380,7 @@ private:
                 landmark_pos.z = landmark.position.z;
                 
                 uint64_t new_landmark_id = next_global_landmark_id_++;
-                LandmarkInfo new_landmark(new_landmark_id, landmark_pos, descriptor, msg->header.stamp);
+                LandmarkInfo new_landmark(new_landmark_id, landmark_pos, descriptor, kf_msg->header.stamp);
                 new_landmark.observation_ids.push_back(new_obs.observation_id);
                 
                 new_landmarks.emplace(new_landmark_id, new_landmark);
@@ -392,10 +407,6 @@ private:
                     landmark_database_.size(), all_observations_.size());
 
         publishAllLandmarkMarkers();
-    }
-
-    void trackingCallback(const yolo_msgs::msg::DetectionArray::ConstSharedPtr& msg) {
-        RCLCPP_INFO(this->get_logger(), "Received tracking info");
     }
 
     void bundleAdjustmentCallback() {
@@ -485,7 +496,7 @@ private:
             // Update optimized poses and landmarks
             updateOptimizedResults(result);
         } else {
-            RCLCPP_WARN(this->get_logger(), 
+            RCLCPP_DEBUG(this->get_logger(), 
                         "Bundle adjustment failed: %s, time: %ld ms", 
                         result.message.c_str(), duration.count());
         }
