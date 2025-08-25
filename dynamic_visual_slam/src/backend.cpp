@@ -12,6 +12,7 @@
 #include "visualization_msgs/msg/marker.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "tf2/LinearMath/Quaternion.hpp"
+#include "yolo_msgs/msg/detection_array.hpp"
 #include <Eigen/Geometry>
 
 class Backend : public rclcpp::Node 
@@ -28,6 +29,7 @@ public:
         keyframe_sub_ = this->create_subscription<dynamic_visual_slam_interfaces::msg::Keyframe>(
             "/frontend/keyframe", qos, 
             std::bind(&Backend::keyframeCallback, this, std::placeholders::_1));
+        tracking_sub_ = this->create_subscription<yolo_msgs::msg::DetectionArray>("/yolo/tracking", qos, std::bind(&Backend::trackingCallback, this, std::placeholders::_1));
             
         // Subscribe to camera info to get proper camera parameters
         camera_info_sub_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
@@ -71,6 +73,7 @@ private:
     
     rclcpp::Subscription<dynamic_visual_slam_interfaces::msg::Keyframe>::SharedPtr keyframe_sub_;
     rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
+    rclcpp::Subscription<yolo_msgs::msg::DetectionArray>::SharedPtr tracking_sub_;
     
     // Publishers
     std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
@@ -389,6 +392,10 @@ private:
                     landmark_database_.size(), all_observations_.size());
 
         publishAllLandmarkMarkers();
+    }
+
+    void trackingCallback(const yolo_msgs::msg::DetectionArray::ConstSharedPtr& msg) {
+        RCLCPP_INFO(this->get_logger(), "Received tracking info");
     }
 
     void bundleAdjustmentCallback() {

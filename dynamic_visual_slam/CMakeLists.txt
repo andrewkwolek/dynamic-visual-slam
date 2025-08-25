@@ -21,6 +21,7 @@ find_package(Ceres REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(dynamic_visual_slam_interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(yolo_msgs REQUIRED)
 
 # DBoW2 and DLib configuration with known paths
 set(DBoW2_ROOT_DIR "$ENV{HOME}/ws/DBoW2")
@@ -110,6 +111,7 @@ ament_target_dependencies(backend
   Ceres
   visualization_msgs
   dynamic_visual_slam_interfaces
+  yolo_msgs
 )
 
 target_link_libraries(frontend

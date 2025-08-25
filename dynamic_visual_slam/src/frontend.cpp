@@ -44,6 +44,7 @@ public:
         image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/feature_detector/features_image", qos);
         camera_info_pub_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("/feature_detector/camera_info", qos);
         keyframe_pub_ = this->create_publisher<dynamic_visual_slam_interfaces::msg::Keyframe>("/frontend/keyframe", qos);
+        dgb_pub_ = this->create_publisher<sensor_msgs::msg::Image>("/frontend/dgb_image", qos);
         
         // Initialize ORB feature detector
         orb_extractor_ = std::make_unique<ORB_SLAM3::ORBextractor>(1000, 1.2f, 8, 20, 7);
@@ -118,6 +119,7 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
     rclcpp::Publisher<dynamic_visual_slam_interfaces::msg::Keyframe>::SharedPtr keyframe_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr dgb_pub_;
 
     // Camera info
     sensor_msgs::msg::CameraInfo::SharedPtr latest_rgb_camera_info_;
@@ -134,6 +136,7 @@ private:
     float depth_fy_;
     float depth_cx_;
     float depth_cy_;
+    sensor_msgs::msg::Image dgb_image_;
 
     // Depth filter
     float MAX_DEPTH;
@@ -393,6 +396,7 @@ private:
         last_keyframe_descriptors_ = current_descriptors.clone();
 
         keyframe_pub_->publish(kf);
+        dgb_pub_->publish(dgb_image_);
     }
 
     void estimateCameraPose(const std::vector<cv::KeyPoint>& prev_kps, const std::vector<cv::KeyPoint>& curr_kps, const std::vector<cv::DMatch>& good_matches, const cv::Mat& prev_depth, const rclcpp::Time& stamp) {
@@ -528,6 +532,7 @@ private:
     void syncCallback(const sensor_msgs::msg::Image::ConstSharedPtr& rgb_msg, const sensor_msgs::msg::Image::ConstSharedPtr& depth_msg)
     {
         try {
+            dgb_image_ = *rgb_msg;
             cv_bridge::CvImagePtr rgb_cv_ptr = cv_bridge::toCvCopy(rgb_msg, "bgr8");
             cv_bridge::CvImagePtr depth_cv_ptr = cv_bridge::toCvCopy(depth_msg, sensor_msgs::image_encodings::TYPE_16UC1);
             cv::Mat current_frame_rgb = rgb_cv_ptr->image;
@@ -634,7 +639,7 @@ private:
                 std::sort(unmatched_features.begin(), unmatched_features.end(),
                         [](const auto& a, const auto& b) { return a.first > b.first; });
                 
-                const int MAX_NEW_FEATURES = 50;  // Tunable parameter
+                const int MAX_NEW_FEATURES = 200;  // Tunable parameter
                 const float MIN_RESPONSE = 50.0f;
                 int added_new = 0;
                 
