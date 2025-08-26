@@ -64,8 +64,8 @@ public:
         keyframe_count_ = 0;
         camera_params_initialized_ = false;
 
-        next_global_landmark_id_ = 1;
-        next_observation_id_ = 1;
+        next_global_landmark_id_ = 0;
+        next_observation_id_ = 0;
         descriptor_matcher_ = cv::BFMatcher(cv::NORM_HAMMING, false);
 
         // Association parameters
