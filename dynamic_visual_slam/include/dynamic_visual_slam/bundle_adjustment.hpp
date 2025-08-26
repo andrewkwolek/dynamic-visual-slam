@@ -71,6 +71,7 @@ struct CameraPose {
 // Structure to store a 3D landmark point
 struct Landmark {
     uint64_t id;
+    std::string category;
     double position[3];
     bool fixed;
 
@@ -80,8 +81,8 @@ struct Landmark {
         position[2] = 0.0;
     }
 
-    Landmark(uint64_t landmark_id, double x, double y, double z, bool fixed_point = false) 
-        : id(landmark_id), fixed(fixed_point) {
+    Landmark(uint64_t landmark_id, std::string cat, double x, double y, double z, bool fixed_point = false) 
+        : id(landmark_id), category(cat), fixed(fixed_point) {
         position[0] = x;
         position[1] = y;
         position[2] = z;
@@ -92,10 +93,11 @@ struct Landmark {
 struct Observation {
     double pixel[2];
     uint64_t landmark_id;
+    std::string category;
     int frame_id;
 
-    Observation(double x, double y, uint64_t landmark, int frame) 
-        : landmark_id(landmark), frame_id(frame) {
+    Observation(double x, double y, uint64_t landmark, std::string cat, int frame) 
+        : landmark_id(landmark), category(cat), frame_id(frame) {
         pixel[0] = x;
         pixel[1] = y;
     }
@@ -122,7 +124,7 @@ struct OptimizationResult {
     std::string message;
     std::chrono::milliseconds optimization_time;
     std::map<int, std::pair<cv::Mat, cv::Mat>> optimized_poses;
-    std::map<uint64_t, cv::Point3d> optimized_landmarks;
+    std::map<std::pair<uint64_t, std::string>, cv::Point3d> optimized_landmarks;
 };
 
 struct WeightedSquaredReprojectionError {
@@ -291,7 +293,7 @@ public:
             
             // Extract optimized landmarks
             for (const auto& [landmark_id, landmark] : landmark_map) {
-                result.optimized_landmarks[landmark_id] = cv::Point3d(
+                result.optimized_landmarks[make_pair(landmark_id, landmark->category)] = cv::Point3d(
                     landmark->position[0],
                     landmark->position[1], 
                     landmark->position[2]

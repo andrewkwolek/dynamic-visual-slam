@@ -13,6 +13,7 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "tf2/LinearMath/Quaternion.hpp"
 #include "yolo_msgs/msg/detection_array.hpp"
+#include "yolo_msgs/msg/detection.hpp"
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
 #include "message_filters/sync_policies/approximate_time.h"
@@ -123,6 +124,7 @@ private:
         uint64_t frame_id;
         cv::Point2f pixel;
         cv::Mat descriptor;
+        std::string category;
 
         ObservationInfo(uint64_t obs_id, uint64_t frame, const cv::Point2f& pix, const cv::Mat& desc)
             : observation_id(obs_id), landmark_id(0), frame_id(frame), pixel(pix), descriptor(desc.clone()) {}
@@ -298,7 +300,7 @@ private:
     };
 
     std::vector<KeyframeInfo> keyframes_;
-    std::unordered_map<uint64_t, LandmarkInfo> landmark_database_;
+    std::unordered_map<std::string, std::unordered_map<uint64_t, LandmarkInfo>> landmark_database_;
     std::vector<ObservationInfo> all_observations_;
     uint64_t next_global_landmark_id_;
     uint64_t next_observation_id_;
@@ -335,6 +337,7 @@ private:
 
         latest_keyframe_timestamp_ = kf_msg->header.stamp;
         int frame_id = kf_msg->frame_id;
+        yolo_msgs::msg::DetectionArray detections = *tracking_msg;
 
         cv::Mat R, t;
         extractPoseFromTransform(kf_msg->pose, R, t);
@@ -345,7 +348,7 @@ private:
         // publishTrajectoryVisualization(t, latest_keyframe_timestamp_, frame_id);
 
         std::vector<ObservationInfo> new_observations;
-        std::unordered_map<uint64_t, LandmarkInfo> new_landmarks;
+        std::unordered_map<std::string, std::unordered_map<uint64_t, LandmarkInfo>> new_landmarks;
         KeyframeInfo new_keyframe(frame_id, R, t, latest_keyframe_timestamp_);
 
         // Need to organize observations and landmarks
@@ -357,6 +360,7 @@ private:
             std::memcpy(descriptor.data, obs.descriptor.data(), obs.descriptor.size());
 
             ObservationInfo new_obs(next_observation_id_, frame_id, cv::Point2f(obs.pixel_x, obs.pixel_y), descriptor);
+            new_obs.category = categorizeObservation(new_obs.pixel, detections);
             new_keyframe.observation_ids.push_back(next_observation_id_);
             next_observation_id_++;
 
@@ -365,7 +369,7 @@ private:
 
             if (associated_landmark_id != -1) {
                 new_obs.landmark_id = associated_landmark_id;
-                auto& landmark_info = landmark_database_.at(associated_landmark_id);
+                auto& landmark_info = landmark_database_[new_obs.category].at(associated_landmark_id);
                 landmark_info.observation_count++;
                 landmark_info.last_seen = kf_msg->header.stamp;
                 landmark_info.observation_ids.push_back(new_obs.observation_id);
@@ -383,7 +387,7 @@ private:
                 LandmarkInfo new_landmark(new_landmark_id, landmark_pos, descriptor, kf_msg->header.stamp);
                 new_landmark.observation_ids.push_back(new_obs.observation_id);
                 
-                new_landmarks.emplace(new_landmark_id, new_landmark);
+                new_landmarks[new_obs.category].emplace(new_landmark_id, new_landmark);
                 new_obs.landmark_id = new_landmark_id;
                 
                 RCLCPP_DEBUG(this->get_logger(), "Created new landmark %lu for observation %lu", 
@@ -398,9 +402,11 @@ private:
         // Add all new observations to database
         all_observations_.insert(all_observations_.end(), new_observations.begin(), new_observations.end());
 
-        for (const auto& [landmark_id, landmark_info] : new_landmarks) {
-            landmark_database_.emplace(landmark_id, landmark_info);
-            RCLCPP_DEBUG(this->get_logger(), "Added landmark %lu to global map", landmark_id);
+        for (const auto& [landmark_category, landmarks] : new_landmarks) {
+            for (const auto& [landmark_id, landmark_info] : landmarks) {
+                landmark_database_[landmark_category].emplace(landmark_id, landmark_info);
+                RCLCPP_DEBUG(this->get_logger(), "Added landmark %lu to global map", landmark_id);
+            }
         }
         
         RCLCPP_DEBUG(this->get_logger(), "Keyframe processed. Total landmarks: %zu, Total observations: %zu", 
@@ -444,28 +450,23 @@ private:
         
         // Collect window observation IDs efficiently
         std::set<uint64_t> window_observation_ids;
+        std::vector<Observation> window_observations;
+        std::set<std::pair<uint64_t, std::string>> window_landmark_ids;
         for (const auto& kf_info : window_keyframe_infos) {
             for (uint64_t obs_id : kf_info.observation_ids) {
                 window_observation_ids.insert(obs_id);
-            }
-        }
-        
-        // Extract observations and landmarks for the window
-        std::vector<Observation> window_observations;
-        std::set<uint64_t> window_landmark_ids;
-        
-        for (const auto& obs_info : all_observations_) {
-            if (window_observation_ids.count(obs_info.observation_id) > 0) {
-                window_landmark_ids.insert(obs_info.landmark_id);
-                window_observations.emplace_back(obs_info.pixel.x, obs_info.pixel.y, obs_info.landmark_id, obs_info.frame_id);
+                auto obs_info = all_observations_[obs_id];
+                window_landmark_ids.insert(make_pair(obs_info.landmark_id, obs_info.category));
+                window_observations.emplace_back(obs_info.pixel.x, obs_info.pixel.y, obs_info.landmark_id, obs_info.category, obs_info.frame_id);
             }
         }
         
         // Extract landmarks for the window
         std::vector<Landmark> window_landmarks;
-        for (uint64_t landmark_id : window_landmark_ids) {
-            const auto& landmark_info = landmark_database_.at(landmark_id);
-            window_landmarks.emplace_back(landmark_id, 
+        for (auto [landmark_id, landmark_category] : window_landmark_ids) {
+            const auto& landmark_info = landmark_database_[landmark_category].at(landmark_id);
+            window_landmarks.emplace_back(landmark_id,
+                                        landmark_category,
                                         landmark_info.position.x, 
                                         landmark_info.position.y, 
                                         landmark_info.position.z,
@@ -506,6 +507,26 @@ private:
         publishAllLandmarkMarkers();
         
         ba_running_.store(false);
+    }
+
+    std::string categorizeObservation(const cv::Point2f& pixel, const yolo_msgs::msg::DetectionArray& detections) {
+        // Check if the pixel falls within any bounding box
+        for (const auto& detection : detections.detections) {
+            const auto& bbox = detection.bbox;
+            
+            // Check if point is inside bounding box
+            if (pixel.x >= bbox.center.position.x - bbox.size.x/2 &&
+                pixel.x <= bbox.center.position.x + bbox.size.x/2 &&
+                pixel.y >= bbox.center.position.y - bbox.size.y/2 &&
+                pixel.y <= bbox.center.position.y + bbox.size.y/2) {
+                
+                // Find the category name for this class
+                return detection.class_name;
+            }
+        }
+        
+        // Not in any bounding box
+        return "unlabeled";
     }
 
     void broadcastKeyframeTransform(const rclcpp::Time& timestamp, const cv::Mat& R, const cv::Mat& t, uint64_t frame_id) {
@@ -641,8 +662,8 @@ private:
         
         // Update landmark positions in the database
         for (const auto& [landmark_id, optimized_pos] : result.optimized_landmarks) {
-            auto it = landmark_database_.find(landmark_id);
-            if (it != landmark_database_.end()) {
+            auto it = landmark_database_[landmark_id.second].find(landmark_id.first);
+            if (it != landmark_database_[landmark_id.second].end()) {
                 it->second.position.x = optimized_pos.x;
                 it->second.position.y = optimized_pos.y;
                 it->second.position.z = optimized_pos.z;
@@ -657,7 +678,7 @@ private:
         std::vector<std::pair<int, double>> candidates;
 
         // Find all candidates based on descriptor
-        for (const auto& [landmark_id, landmark_info] : landmark_database_) {
+        for (const auto& [landmark_id, landmark_info] : landmark_database_[obs.category]) {
             std::vector<cv::DMatch> matches;
 
             descriptor_matcher_.match(obs.descriptor, landmark_info.descriptor, matches);
@@ -678,7 +699,7 @@ private:
         double best_reprojection_error = std::numeric_limits<double>::max();
 
         for (const auto& [candidate_id, descriptor_distance] : candidates) {
-            const auto& candidate_landmark = landmark_database_.at(candidate_id);
+            const auto& candidate_landmark = landmark_database_[obs.category].at(candidate_id);
 
             cv::Point3f landmark_3d_cv(candidate_landmark.position.x, candidate_landmark.position.y, candidate_landmark.position.z);
 
@@ -751,26 +772,28 @@ private:
         const int min_observation_threshold = 2;
         const double max_time_since_seen = 20.0;
         
-        std::vector<uint64_t> landmarks_to_remove;
+        std::vector<std::pair<uint64_t, std::string>> landmarks_to_remove;
         
-        for (const auto& [landmark_id, landmark_info] : landmark_database_) {
-            double time_since_seen = (current_time - landmark_info.last_seen).seconds();
-            if (landmark_info.observation_count < min_observation_threshold && time_since_seen > max_time_since_seen) {
-                landmarks_to_remove.push_back(landmark_id);
-                RCLCPP_DEBUG(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %d)", 
-                            landmark_id, landmark_info.observation_count, min_observation_threshold);
+        for (const auto& [landmark_category, landmarks] : landmark_database_) {
+            for (const auto& [landmark_id, landmark_info] : landmarks) {
+                double time_since_seen = (current_time - landmark_info.last_seen).seconds();
+                if (landmark_info.observation_count < min_observation_threshold && time_since_seen > max_time_since_seen) {
+                    landmarks_to_remove.push_back(make_pair(landmark_id, landmark_category));
+                    RCLCPP_DEBUG(this->get_logger(), "Marking landmark %lu for removal: insufficient observations (%d < %d)", 
+                                landmark_id, landmark_info.observation_count, min_observation_threshold);
+                }
             }
         }
         
         int removed_landmarks = 0;
         int removed_observations = 0;
         
-        for (uint64_t landmark_id : landmarks_to_remove) {
-            const auto& landmark_info = landmark_database_.at(landmark_id);
+        for (auto [landmark_id, landmark_category] : landmarks_to_remove) {
+            const auto& landmark_info = landmark_database_[landmark_category].at(landmark_id);
             std::set<uint64_t> obs_ids_to_remove(landmark_info.observation_ids.begin(), 
                                                  landmark_info.observation_ids.end());
             
-            landmark_database_.erase(landmark_id);
+            landmark_database_[landmark_category].erase(landmark_id);
             removed_landmarks++;
             
             auto obs_it = all_observations_.begin();
@@ -814,50 +837,52 @@ private:
             0, -1,  0     // Optical -Y → ROS Z (up)
         );
         
-        for (const auto& [landmark_id, landmark_info] : landmark_database_) {
-            visualization_msgs::msg::Marker marker;
-            marker.header.frame_id = "world";
-            marker.header.stamp = latest_keyframe_timestamp_;
-            marker.ns = "landmarks";
-            marker.id = static_cast<int>(landmark_id);
-            marker.type = visualization_msgs::msg::Marker::SPHERE;
-            marker.action = visualization_msgs::msg::Marker::ADD;
-            
-            // Convert landmark position from optical to ROS for visualization
-            cv::Mat pos_optical = (cv::Mat_<double>(3,1) << 
-                landmark_info.position.x, 
-                landmark_info.position.y, 
-                landmark_info.position.z);
-            cv::Mat pos_ros = T_opt_to_ros * pos_optical;
-            
-            marker.pose.position.x = pos_ros.at<double>(0);
-            marker.pose.position.y = pos_ros.at<double>(1);
-            marker.pose.position.z = pos_ros.at<double>(2);
-            marker.pose.orientation.x = 0.0;
-            marker.pose.orientation.y = 0.0;
-            marker.pose.orientation.z = 0.0;
-            marker.pose.orientation.w = 1.0;
-            
-            marker.scale.x = 0.005;
-            marker.scale.y = 0.005;
-            marker.scale.z = 0.005;
-            
-            if (landmark_database_.at(landmark_id).observation_count > 1) {
-                marker.color.r = 0.0;
-                marker.color.g = 1.0;
-                marker.color.b = 1.0;
-                marker.color.a = 0.8;
+        for (const auto& [landmark_category, landmarks] : landmark_database_) {
+            for (const auto& [landmark_id, landmark_info] : landmarks) {
+                visualization_msgs::msg::Marker marker;
+                marker.header.frame_id = "world";
+                marker.header.stamp = latest_keyframe_timestamp_;
+                marker.ns = "landmarks";
+                marker.id = static_cast<int>(landmark_id);
+                marker.type = visualization_msgs::msg::Marker::SPHERE;
+                marker.action = visualization_msgs::msg::Marker::ADD;
+                
+                // Convert landmark position from optical to ROS for visualization
+                cv::Mat pos_optical = (cv::Mat_<double>(3,1) << 
+                    landmark_info.position.x, 
+                    landmark_info.position.y, 
+                    landmark_info.position.z);
+                cv::Mat pos_ros = T_opt_to_ros * pos_optical;
+                
+                marker.pose.position.x = pos_ros.at<double>(0);
+                marker.pose.position.y = pos_ros.at<double>(1);
+                marker.pose.position.z = pos_ros.at<double>(2);
+                marker.pose.orientation.x = 0.0;
+                marker.pose.orientation.y = 0.0;
+                marker.pose.orientation.z = 0.0;
+                marker.pose.orientation.w = 1.0;
+                
+                marker.scale.x = 0.005;
+                marker.scale.y = 0.005;
+                marker.scale.z = 0.005;
+                
+                if (landmark_database_[landmark_category].at(landmark_id).observation_count > 1) {
+                    marker.color.r = 0.0;
+                    marker.color.g = 1.0;
+                    marker.color.b = 1.0;
+                    marker.color.a = 0.8;
+                }
+                else {
+                    marker.color.r = 0.0;
+                    marker.color.g = 1.0;
+                    marker.color.b = 0.0;
+                    marker.color.a = 0.8;
+                }
+                
+                marker.lifetime = rclcpp::Duration::from_seconds(0);
+                
+                marker_array.markers.push_back(marker);
             }
-            else {
-                marker.color.r = 0.0;
-                marker.color.g = 1.0;
-                marker.color.b = 0.0;
-                marker.color.a = 0.8;
-            }
-            
-            marker.lifetime = rclcpp::Duration::from_seconds(0);
-            
-            marker_array.markers.push_back(marker);
         }
         
         landmark_markers_pub_->publish(marker_array);
