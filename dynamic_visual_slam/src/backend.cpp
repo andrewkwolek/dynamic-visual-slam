@@ -369,7 +369,7 @@ private:
 
             if (associated_landmark_id != -1) {
                 new_obs.landmark_id = associated_landmark_id;
-                auto& landmark_info = landmark_database_[new_obs.category].at(associated_landmark_id);
+                auto& landmark_info = landmark_database_.at(new_obs.category).at(associated_landmark_id);
                 landmark_info.observation_count++;
                 landmark_info.last_seen = kf_msg->header.stamp;
                 landmark_info.observation_ids.push_back(new_obs.observation_id);
@@ -404,7 +404,7 @@ private:
 
         for (const auto& [landmark_category, landmarks] : new_landmarks) {
             for (const auto& [landmark_id, landmark_info] : landmarks) {
-                landmark_database_[landmark_category].emplace(landmark_id, landmark_info);
+                landmark_database_.at(landmark_category).emplace(landmark_id, landmark_info);
                 RCLCPP_DEBUG(this->get_logger(), "Added landmark %lu to global map", landmark_id);
             }
         }
@@ -450,12 +450,18 @@ private:
         
         // Collect window observation IDs efficiently
         std::set<uint64_t> window_observation_ids;
-        std::vector<Observation> window_observations;
-        std::set<std::pair<uint64_t, std::string>> window_landmark_ids;
         for (const auto& kf_info : window_keyframe_infos) {
             for (uint64_t obs_id : kf_info.observation_ids) {
                 window_observation_ids.insert(obs_id);
-                auto obs_info = all_observations_[obs_id];
+            }
+        }
+        
+        // Extract observations and landmarks for the window
+        std::vector<Observation> window_observations;
+        std::set<std::pair<uint64_t, std::string>> window_landmark_ids;
+        
+        for (const auto& obs_info : all_observations_) {
+            if (window_observation_ids.count(obs_info.observation_id) > 0) {
                 window_landmark_ids.insert(make_pair(obs_info.landmark_id, obs_info.category));
                 window_observations.emplace_back(obs_info.pixel.x, obs_info.pixel.y, obs_info.landmark_id, obs_info.category, obs_info.frame_id);
             }
@@ -464,7 +470,7 @@ private:
         // Extract landmarks for the window
         std::vector<Landmark> window_landmarks;
         for (auto [landmark_id, landmark_category] : window_landmark_ids) {
-            const auto& landmark_info = landmark_database_[landmark_category].at(landmark_id);
+            const auto& landmark_info = landmark_database_.at(landmark_category).at(landmark_id);
             window_landmarks.emplace_back(landmark_id,
                                         landmark_category,
                                         landmark_info.position.x, 
@@ -699,7 +705,7 @@ private:
         double best_reprojection_error = std::numeric_limits<double>::max();
 
         for (const auto& [candidate_id, descriptor_distance] : candidates) {
-            const auto& candidate_landmark = landmark_database_[obs.category].at(candidate_id);
+            const auto& candidate_landmark = landmark_database_.at(obs.category).at(candidate_id);
 
             cv::Point3f landmark_3d_cv(candidate_landmark.position.x, candidate_landmark.position.y, candidate_landmark.position.z);
 
@@ -789,7 +795,7 @@ private:
         int removed_observations = 0;
         
         for (auto [landmark_id, landmark_category] : landmarks_to_remove) {
-            const auto& landmark_info = landmark_database_[landmark_category].at(landmark_id);
+            const auto& landmark_info = landmark_database_.at(landmark_category).at(landmark_id);
             std::set<uint64_t> obs_ids_to_remove(landmark_info.observation_ids.begin(), 
                                                  landmark_info.observation_ids.end());
             
@@ -866,7 +872,7 @@ private:
                 marker.scale.y = 0.005;
                 marker.scale.z = 0.005;
                 
-                if (landmark_database_[landmark_category].at(landmark_id).observation_count > 1) {
+                if (landmark_database_.at(landmark_category).at(landmark_id).observation_count > 1) {
                     marker.color.r = 0.0;
                     marker.color.g = 1.0;
                     marker.color.b = 1.0;
