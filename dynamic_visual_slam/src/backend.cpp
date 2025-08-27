@@ -311,6 +311,8 @@ private:
     double max_reprojection_distance_;
     double min_parallax_ratio_;
 
+    std::unordered_set<std::string> filtered_objects_ = {"person"};
+
     void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
         if (!camera_params_initialized_) {
             fx_ = msg->k[0];  // K[0,0]
@@ -361,6 +363,11 @@ private:
 
             ObservationInfo new_obs(next_observation_id_, frame_id, cv::Point2f(obs.pixel_x, obs.pixel_y), descriptor);
             new_obs.category = categorizeObservation(new_obs.pixel, detections);
+
+            if (filtered_objects_.find(new_obs.category) != filtered_objects_.end()) {
+                continue;
+            }
+
             new_keyframe.observation_ids.push_back(next_observation_id_);
             next_observation_id_++;
 
