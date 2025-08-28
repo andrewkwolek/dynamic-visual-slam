@@ -251,7 +251,7 @@ std::unordered_set<std::string> filtered_objects_ = {
 
 ### Topics
 
-#### Subscriptions
+#### Subscribers
 ```bash
 # Camera input
 /camera/camera/color/image_raw              # RGB images
@@ -262,7 +262,7 @@ std::unordered_set<std::string> filtered_objects_ = {
 /yolo/tracking                              # YOLO detections
 ```
 
-#### Publications
+#### Publishers
 ```bash
 # Visual output
 /feature_detector/features_image            # Annotated RGB with features
