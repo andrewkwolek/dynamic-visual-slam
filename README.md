@@ -1,12 +1,3 @@
-/**
- * @file README.md
- * @brief Dynamic Visual SLAM - A real-time semantic-aware visual SLAM system
- * @author Andrew Kwolek (andrewkwolek2025@u.northwestern.edu)
- * @date 2025
- * @version 0.0.1
- * @copyright MIT License
- */
-
 # Dynamic Visual SLAM
 
 A real-time semantic-aware visual SLAM system for dynamic environments using ROS 2. This system combines traditional visual odometry with object detection to create robust 3D maps that can distinguish between static scene structure and dynamic objects, making it ideal for autonomous navigation in populated environments.
@@ -17,7 +8,7 @@ A real-time semantic-aware visual SLAM system for dynamic environments using ROS
 
 ### Core SLAM Capabilities
 - **Real-time Visual Odometry**: ORB feature detection and tracking with sub-pixel accuracy
-- **Sliding Window Bundle Adjustment**: Ceres Solver-based optimization for robust pose estimation  
+- **Sliding Window Bundle Adjustment**: Ceres Solver-based optimization for robust pose estimation
 - **Persistent 3D Mapping**: Efficient landmark management and visualization
 - **Keyframe-based Architecture**: Adaptive keyframe selection for computational efficiency
 
@@ -38,28 +29,18 @@ A real-time semantic-aware visual SLAM system for dynamic environments using ROS
 The system follows a modular frontend-backend architecture optimized for real-time performance:
 
 ### Frontend Node (`frontend`)
-/**
- * @brief The frontend node handles real-time visual processing
- * 
- * Key responsibilities:
- * - Multi-modal Processing: Synchronized RGB-D image processing with object detection integration
- * - Advanced Feature Pipeline: ORB extraction → depth filtering → descriptor matching → geometric validation
- * - Intelligent Keyframe Selection: Adaptive selection based on tracking quality and temporal criteria
- * - Semantic Feature Culling: Prioritizes matched features while adding high-quality unmatched features for new landmark discovery
- * - Robust Pose Estimation: PnP RANSAC with motion outlier detection and coordinate frame conversion
- */
+- **Multi-modal Processing**: Synchronized RGB-D image processing with object detection integration
+- **Advanced Feature Pipeline**: ORB extraction → depth filtering → descriptor matching → geometric validation
+- **Intelligent Keyframe Selection**: Adaptive selection based on tracking quality and temporal criteria
+- **Semantic Feature Culling**: Prioritizes matched features while adding high-quality unmatched features for new landmark discovery
+- **Robust Pose Estimation**: PnP RANSAC with motion outlier detection and coordinate frame conversion
 
 ### Backend Node (`backend`)
-/**
- * @brief The backend node manages optimization and mapping
- * 
- * Key responsibilities:
- * - Semantic Landmark Database: Category-organized persistent landmark storage with descriptor-based association
- * - Sliding Window Optimization: Ceres-based bundle adjustment with Huber loss robust cost functions
- * - Data Association Pipeline: Multi-stage association using descriptor similarity and reprojection error
- * - Map Maintenance: Automatic landmark pruning and triangulation refinement
- * - Real-time Visualization: Continuous publication of optimized poses and landmark positions
- */
+- **Semantic Landmark Database**: Category-organized persistent landmark storage with descriptor-based association
+- **Sliding Window Optimization**: Ceres-based bundle adjustment with Huber loss robust cost functions
+- **Data Association Pipeline**: Multi-stage association using descriptor similarity and reprojection error
+- **Map Maintenance**: Automatic landmark pruning and triangulation refinement
+- **Real-time Visualization**: Continuous publication of optimized poses and landmark positions
 
 ## 🚀 Installation
 
@@ -198,11 +179,6 @@ rviz2 -d src/dynamic_visual_slam/config/realsense.rviz
 ## 🔧 Configuration
 
 ### Camera Parameters
-/**
- * @note The system automatically reads camera intrinsics from RealSense. 
- * For custom cameras, modify the camera matrix construction in frontend.cpp
- */
-
 The system automatically reads camera intrinsics from RealSense. For custom cameras, modify:
 ```cpp
 // In frontend.cpp - update camera matrix construction
@@ -212,11 +188,6 @@ rgb_camera_matrix_.at<double>(0, 2) = your_cx;
 ```
 
 ### Bundle Adjustment Tuning
-/**
- * @brief Key parameters for bundle adjustment optimization
- * @see bundle_adjustment.hpp for complete parameter list
- */
-
 Key parameters in `bundle_adjustment.hpp`:
 ```cpp
 // Optimization window size (number of keyframes)
@@ -233,11 +204,6 @@ huber_threshold = 1.345;
 ```
 
 ### Feature Detection Settings
-/**
- * @brief ORB feature detector configuration
- * @see frontend.cpp for complete feature detection pipeline
- */
-
 Adjust ORB parameters in `frontend.cpp`:
 ```cpp
 // Feature detection
@@ -255,11 +221,6 @@ MAX_DEPTH = 3.0f;  // meters
 ```
 
 ### Semantic Filtering
-/**
- * @brief Configure object classes to exclude from SLAM features
- * @see backend.cpp for semantic processing pipeline
- */
-
 Configure which object classes to filter in `backend.cpp`:
 ```cpp
 // Objects to exclude from SLAM features
@@ -291,45 +252,34 @@ std::unordered_set<std::string> filtered_objects_ = {
 ### Topics
 
 #### Subscriptions
-/**
- * @brief Input topics consumed by the SLAM system
- */
+```bash
+# Camera input
+/camera/camera/color/image_raw              # RGB images
+/camera/camera/aligned_depth_to_color/image_raw  # Aligned depth
+/camera/camera/color/camera_info            # Camera calibration
 
-| Topic | Type | Description |
-|-------|------|-------------|
-| `/camera/camera/color/image_raw` | `sensor_msgs::Image` | RGB images |
-| `/camera/camera/aligned_depth_to_color/image_raw` | `sensor_msgs::Image` | Aligned depth |
-| `/camera/camera/color/camera_info` | `sensor_msgs::CameraInfo` | Camera calibration |
-| `/yolo/tracking` | `yolo_msgs::DetectionArray` | YOLO detections (optional) |
+# Object detection (optional)
+/yolo/tracking                              # YOLO detections
+```
 
 #### Publications
-/**
- * @brief Output topics published by the SLAM system
- */
+```bash
+# Visual output
+/feature_detector/features_image            # Annotated RGB with features
+/frontend/keyframe                          # Keyframe data for backend
 
-| Topic | Type | Description |
-|-------|------|-------------|
-| `/feature_detector/features_image` | `sensor_msgs::Image` | Annotated RGB with features |
-| `/frontend/keyframe` | `dynamic_visual_slam_interfaces::Keyframe` | Keyframe data for backend |
-| `/backend/landmark_markers` | `visualization_msgs::MarkerArray` | 3D landmark visualization |
-| `/backend/trajectory` | `visualization_msgs::MarkerArray` | Camera trajectory |
-| `/tf` | `tf2_msgs::TFMessage` | Camera pose transforms |
+# SLAM output
+/backend/landmark_markers                   # 3D landmark visualization
+/backend/trajectory                         # Camera trajectory
+/tf                                         # Camera pose transforms
+```
 
 ### Custom Messages
-/**
- * @brief Custom ROS 2 message definitions for SLAM data structures
- * @see dynamic_visual_slam_interfaces package for complete message definitions
- */
-
 - **`Keyframe.msg`**: Complete keyframe with pose, landmarks, and observations
 - **`Landmark.msg`**: 3D landmark with unique ID and position
 - **`Observation.msg`**: 2D feature observation with descriptor
 
 ### Coordinate Frames
-/**
- * @brief TF frame hierarchy used by the system
- */
-
 ```
 world (global reference)
 ├── odom (odometry frame)
@@ -388,10 +338,6 @@ ros2 topic echo /yolo/tracking
 ```
 
 ### Debug Mode
-/**
- * @warning Debug mode significantly increases log output and may impact performance
- */
-
 Enable detailed logging:
 ```bash
 ros2 run dynamic_visual_slam frontend --ros-args --log-level debug
@@ -411,12 +357,6 @@ colcon test-result --verbose
 ```
 
 ## 🤝 Contributing
-
-/**
- * @brief Contribution guidelines for developers
- * 
- * We welcome contributions! Please follow the development setup and code style guidelines.
- */
 
 We welcome contributions! Here's how to get started:
 
@@ -445,13 +385,6 @@ colcon test --packages-select dynamic_visual_slam
 - Include unit tests for new functionality
 
 ### Areas for Contribution
-/**
- * @todo Implement full loop closure detection pipeline
- * @todo Add multi-camera support  
- * @todo GPU acceleration for feature extraction
- * @todo Advanced semantic object tracking
- */
-
 - **Loop Closure**: Implement full DBoW2 place recognition pipeline
 - **Multi-Camera Support**: Extend to stereo or multi-camera setups
 - **Advanced Semantics**: Integration with other object detection frameworks
@@ -482,13 +415,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Andrew Kwolek** - *Initial work and primary development* - [andrewkwolek2025@u.northwestern.edu](mailto:andrewkwolek2025@u.northwestern.edu)
 
 ---
-
-/**
- * @note Built for educational and research purposes at Northwestern University.
- * For questions, issues, or collaboration opportunities, please open an issue or contact the author directly.
- * 
- * @warning Ensure proper calibration of camera parameters for accurate results.
- * System requires sufficient lighting and textured environment for reliable operation.
- */
 
 *Built for educational and research purposes at Northwestern University. For questions, issues, or collaboration opportunities, please open an issue or contact the author directly.*
