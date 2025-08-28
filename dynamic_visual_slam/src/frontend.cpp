@@ -783,7 +783,7 @@ private:
         keyframe_pub_->publish(kf);
         dgb_pub_->publish(dgb_image_);
         
-        RCLCPP_INFO(this->get_logger(), "Published keyframe %lld with %zu landmarks", 
+        RCLCPP_INFO(this->get_logger(), "Published keyframe %ld with %zu landmarks", 
                     kf.frame_id, kf.landmarks.size());
     }
 
